@@ -154,6 +154,13 @@ pub async fn download_favicon(url_str: &str) -> Option<String> {
         return None;
     }
 
+    // Reject excessively large responses (max 2 MB for a favicon)
+    const MAX_FAVICON_SIZE: usize = 2 * 1024 * 1024;
+    if response.stdout.len() > MAX_FAVICON_SIZE {
+        tracing::warn!("Favicon response too large: {} bytes", response.stdout.len());
+        return None;
+    }
+
     // Validate the response is actually an image
     if !is_valid_image_bytes(&response.stdout) {
         tracing::warn!("Favicon response is not a valid image format");
@@ -203,10 +210,9 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
 }
 
 pub fn icon_pack_installed() -> bool {
-    let packs: Vec<&str> = vec!["Papirus", "Papirus-Dark", "Papirus-Light"];
-    let mut directories = 0;
+    let packs: &[&str] = &["Papirus", "Papirus-Dark", "Papirus-Light"];
 
-    let mut icons_dir = match icons_location() {
+    let icons_dir = match icons_location() {
         Some(dir) => dir,
         None => PathBuf::from(env!("HOME"))
             .join(".local")
@@ -214,15 +220,7 @@ pub fn icon_pack_installed() -> bool {
             .join("icons"),
     };
 
-    for theme in packs.iter() {
-        icons_dir.push(theme);
-
-        if icons_dir.exists() {
-            directories += 1;
-        };
-    }
-
-    directories > 0
+    packs.iter().any(|theme| icons_dir.join(theme).exists())
 }
 
 pub async fn add_icon_packs_install_script() -> Result<String, Box<dyn std::error::Error>> {

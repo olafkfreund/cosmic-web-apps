@@ -114,10 +114,7 @@ impl WebAppLauncher {
 
         let proxy = DynamicLauncherProxy::new().await?;
 
-        let mut f = std::fs::File::open(&self.icon)?;
-        let metadata = std::fs::metadata(&self.icon)?;
-        let mut buffer = vec![0; metadata.len() as usize];
-        f.read(&mut buffer)?;
+        let buffer = std::fs::read(&self.icon)?;
 
         let icon = Icon::Bytes(buffer);
         let response = proxy
@@ -195,6 +192,16 @@ fn validate_imported_app(mut app: WebAppLauncher) -> Option<WebAppLauncher> {
         return None;
     }
 
+    // Validate icon path doesn't contain traversal sequences
+    let icon_path = std::path::Path::new(&app.icon);
+    let icon_has_traversal = icon_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if icon_has_traversal {
+        tracing::warn!("Rejecting imported app '{}': icon path contains '..'", app.name);
+        return None;
+    }
+
     // Truncate name to reasonable length
     if app.name.len() > 256 {
         app.name.truncate(256);
@@ -208,7 +215,17 @@ fn validate_imported_app(mut app: WebAppLauncher) -> Option<WebAppLauncher> {
 
     // Validate profile path is within expected directory (if set)
     if let Some(ref profile) = app.browser.profile {
-        if let Some(xdg_data) = dirs::data_dir() {
+        // Reject paths containing traversal components
+        let has_traversal = profile
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+        if has_traversal {
+            tracing::warn!(
+                "Rejecting imported app '{}': profile path contains '..'",
+                app.name
+            );
+            app.browser.profile = None;
+        } else if let Some(xdg_data) = dirs::data_dir() {
             let expected_prefix = xdg_data.join(crate::APP_ID).join("profiles");
             if !profile.starts_with(&expected_prefix) {
                 tracing::warn!(

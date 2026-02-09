@@ -1,11 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Maximum length for a sanitized app ID.
+const MAX_APP_ID_LEN: usize = 128;
+
 /// Sanitize an app ID for safe use in filesystem paths and desktop entry filenames.
-/// Removes path separators and traversal sequences.
+/// Removes path separators, traversal sequences, and enforces length limits.
+/// Returns an empty string if the input is empty after sanitization.
 pub fn sanitize_app_id(id: &str) -> String {
-    id.replace(['/', '\\', '\0'], "")
-        .replace("..", "")
+    let sanitized = id
+        .replace(['/', '\\', '\0'], "")
+        .replace("..", "");
+    if sanitized.len() > MAX_APP_ID_LEN {
+        sanitized[..MAX_APP_ID_LEN].to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

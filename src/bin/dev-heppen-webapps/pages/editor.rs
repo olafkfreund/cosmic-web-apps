@@ -183,14 +183,17 @@ impl AppEditor {
                 let browser = if let Some(browser) = &self.app_browser {
                     browser.clone()
                 } else {
-                    let app_id = self.app_title.replace(' ', "");
-                    let app_id = app_id + &rng().random_range(1000..10000).to_string();
+                    let app_id = format!(
+                        "{}{}",
+                        self.app_title.replace(' ', ""),
+                        rng().random_range(1000..10000)
+                    );
 
                     let mut browser = webapps::browser::Browser::new(&app_id, self.app_persistent);
                     browser.window_title = Some(self.app_title.clone());
                     browser.url = Some(self.app_url.clone());
                     browser.window_size = Some(self.app_window_size.clone());
-                    browser.window_decorations = Some(self.app_window_decorations.clone());
+                    browser.window_decorations = Some(self.app_window_decorations);
                     browser.private_mode = Some(self.app_private_mode);
                     browser.try_simulate_mobile = Some(self.app_simulate_mobile);
                     browser

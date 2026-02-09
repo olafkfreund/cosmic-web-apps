@@ -26,18 +26,18 @@
           pname = "dev-heppen-webapps";
           version = "2.0.1";
 
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            wrapGAppsHook
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.wrapGAppsHook
           ];
 
-          buildInputs = with pkgs; [
-            openssl
-            libxkbcommon
-            wayland
-            gtk3
-            webkitgtk_4_1
-            glib-networking
+          buildInputs = [
+            pkgs.openssl
+            pkgs.libxkbcommon
+            pkgs.wayland
+            pkgs.gtk3
+            pkgs.webkitgtk_4_1
+            pkgs.glib-networking
           ];
 
           LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
@@ -68,12 +68,12 @@
             runHook postInstall
           '';
 
-          meta = with pkgs.lib; {
+          meta = {
             description = "Web applications at your fingertips - COSMIC desktop web app manager";
             homepage = "https://github.com/cosmic-utils/web-apps";
-            license = licenses.gpl3Only;
-            maintainers = with maintainers; [ ];
-            platforms = platforms.linux;
+            license = pkgs.lib.licenses.gpl3Only;
+            maintainers = [];
+            platforms = pkgs.lib.platforms.linux;
             mainProgram = "dev-heppen-webapps";
           };
         });
@@ -85,12 +85,12 @@
         };
 
         devShells.default = craneLib.devShell {
-          packages = with pkgs; [
-            rust-analyzer
-            rustfmt
-            clippy
-            cargo-watch
-            just
+          packages = [
+            pkgs.rust-analyzer
+            pkgs.rustfmt
+            pkgs.clippy
+            pkgs.cargo-watch
+            pkgs.just
           ];
 
           inputsFrom = [ cosmic-web-apps ];
