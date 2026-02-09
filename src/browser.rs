@@ -8,9 +8,15 @@ const MAX_APP_ID_LEN: usize = 128;
 /// Removes path separators, traversal sequences, and enforces length limits.
 /// Returns an empty string if the input is empty after sanitization.
 pub fn sanitize_app_id(id: &str) -> String {
-    let sanitized = id
-        .replace(['/', '\\', '\0'], "")
-        .replace("..", "");
+    let mut sanitized: String = id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+
+    while sanitized.contains("..") {
+        sanitized = sanitized.replace("..", "");
+    }
+
     if sanitized.len() > MAX_APP_ID_LEN {
         sanitized[..MAX_APP_ID_LEN].to_string()
     } else {

@@ -106,10 +106,13 @@ duplicate=Duplicate
 file-dialog-export-title=Export Web Apps
 file-dialog-import-title=Import Web Apps
 file-dialog-open-theme=Open Theme
+file-dialog-open-icons=Open multiple images
 file-dialog-save=Save
 file-dialog-import=Import
 file-filter-ron=RON export
 file-filter-ron-theme=Ron Theme
+file-filter-png=PNG Image
+file-filter-svg=SVG Images
 
 # toast notifications
 toast-app-saved=Web app saved successfully

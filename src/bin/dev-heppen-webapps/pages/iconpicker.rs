@@ -37,13 +37,17 @@ impl IconPicker {
             Message::DownloadIconsPack => return task::message(pages::Message::DownloaderStarted),
             Message::OpenIconPickerDialog => {
                 return task::future(async move {
+                    let title = fl!("file-dialog-open-icons");
+                    let label = fl!("open");
+                    let png_filter = fl!("file-filter-png");
+                    let svg_filter = fl!("file-filter-svg");
                     let response = match SelectedFiles::open_file()
-                        .title("Open multiple images")
-                        .accept_label("Open")
+                        .title(title.as_str())
+                        .accept_label(label.as_str())
                         .modal(true)
                         .multiple(true)
-                        .filter(FileFilter::new("PNG Image").glob("*.png"))
-                        .filter(FileFilter::new("SVG Images").glob("*.svg"))
+                        .filter(FileFilter::new(&png_filter).glob("*.png"))
+                        .filter(FileFilter::new(&svg_filter).glob("*.svg"))
                         .send()
                         .await
                     {

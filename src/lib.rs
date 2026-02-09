@@ -187,6 +187,12 @@ pub fn icons_location() -> Option<PathBuf> {
 }
 
 pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf> {
+    if icon_name.contains('/') || icon_name.contains('\\') || icon_name.contains("..") ||
+       extension.contains('/') || extension.contains('\\') || extension.contains("..") {
+        tracing::warn!("Invalid icon name or extension: {icon_name}.{extension}");
+        return None;
+    }
+
     if let Some(icons_dir) = icons_location() {
         if !icons_dir.exists() {
             if let Err(e) = create_dir_all(&icons_dir) {
@@ -316,7 +322,10 @@ pub async fn image_handle(path: String) -> Option<Icon> {
             let mut data = Vec::new();
 
             if let Ok(mut file) = fs::File::open(&result_path) {
-                let _ = file.read_to_end(&mut data);
+                if let Err(e) = file.read_to_end(&mut data) {
+                    tracing::warn!("Failed to read icon file {:?}: {e}", result_path);
+                    return None;
+                }
             }
 
             if let Ok(image_reader) = ImageReader::new(Cursor::new(&data)).with_guessed_format() {

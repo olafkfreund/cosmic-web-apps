@@ -36,5 +36,7 @@ fn init_logging() {
         // completes the builder.
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+        eprintln!("Failed to set default subscriber: {e}");
+    }
 }

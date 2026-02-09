@@ -255,12 +255,12 @@ impl Application for QuickWebApps {
 
         match message {
             Message::ChangeUserTheme(idx) => {
-                self.theme_idx = Some(idx);
-                let selected = self.themes_list[idx].clone();
-
-                tasks.push(task::message(cosmic::action::app(Message::UpdateTheme(
-                    Box::new(selected),
-                ))));
+                if let Some(selected) = self.themes_list.get(idx) {
+                    self.theme_idx = Some(idx);
+                    tasks.push(task::message(cosmic::action::app(Message::UpdateTheme(
+                        Box::new(selected.clone()),
+                    ))));
+                }
             }
             Message::CloseDialog => self.dialogs = None,
             Message::CloseToast(id) => {
