@@ -64,10 +64,9 @@ pub fn installed_webapps() -> Vec<WebAppLauncher> {
                         continue;
                     }
 
-                    let file = std::fs::File::open(entry.path());
                     let mut content = String::new();
 
-                    if let Ok(mut f) = file {
+                    if let Ok(mut f) = std::fs::File::open(entry.path()) {
                         if let Err(e) = f.read_to_string(&mut content) {
                             tracing::warn!("Failed to read {:?}: {e}", entry.path());
                             continue;

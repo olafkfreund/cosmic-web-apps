@@ -12,6 +12,11 @@ use webapps::fl;
 
 use crate::pages;
 
+/// Filter a string to only contain digits and dots (for numeric input fields).
+fn filter_numeric(input: String) -> String {
+    input.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct AppEditor {
     pub app_browser: Option<webapps::browser::Browser>,
@@ -45,8 +50,8 @@ impl Default for AppEditor {
             app_icon: String::new(),
             app_category: webapps::Category::default(),
             app_persistent: false,
-            app_window_width: String::from(webapps::DEFAULT_WINDOW_WIDTH.to_string()),
-            app_window_height: String::from(webapps::DEFAULT_WINDOW_HEIGHT.to_string()),
+            app_window_width: webapps::DEFAULT_WINDOW_WIDTH.to_string(),
+            app_window_height: webapps::DEFAULT_WINDOW_HEIGHT.to_string(),
             app_window_size: webapps::WindowSize::default(),
             app_window_decorations: true,
             app_private_mode: false,
@@ -238,15 +243,12 @@ impl AppEditor {
                 self.app_window_decorations = decorations;
             }
             Message::WindowWidth(width) => {
-                // Only accept numeric input
-                let filtered: String = width.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-                self.app_window_width = filtered;
+                self.app_window_width = filter_numeric(width);
                 let parsed: f64 = self.app_window_width.parse().unwrap_or(webapps::DEFAULT_WINDOW_WIDTH);
                 self.app_window_size.0 = parsed.clamp(200.0, 8192.0);
             }
             Message::WindowHeight(height) => {
-                let filtered: String = height.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-                self.app_window_height = filtered;
+                self.app_window_height = filter_numeric(height);
                 let parsed: f64 = self.app_window_height.parse().unwrap_or(webapps::DEFAULT_WINDOW_HEIGHT);
                 self.app_window_size.1 = parsed.clamp(200.0, 8192.0);
             }

@@ -28,7 +28,6 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::ExitStatus,
-    str::FromStr as _,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -563,7 +562,7 @@ impl Application for QuickWebApps {
             Message::LaunchUrl(url) => match open::that_detached(&url) {
                 Ok(()) => {}
                 Err(err) => {
-                    eprintln!("failed to open {url:?}: {err}");
+                    tracing::error!("Failed to open {url:?}: {err}");
                 }
             },
             Message::LoadThemes => {
@@ -620,7 +619,7 @@ impl Application for QuickWebApps {
                 let mut moved: Vec<String> = Vec::new();
 
                 for path in file_paths {
-                    let Ok(buf) = PathBuf::from_str(&path);
+                    let buf = PathBuf::from(&path);
                     let icon_name = buf.file_stem();
 
                     if let Some(file_stem) = icon_name {

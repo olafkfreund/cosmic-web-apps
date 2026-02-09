@@ -8,7 +8,6 @@ use std::{
     io::{Cursor, Read},
     os::unix::fs::PermissionsExt as _,
     path::PathBuf,
-    str::FromStr,
 };
 use tokio::{fs::File, io::AsyncWriteExt as _, process::Child};
 
@@ -41,7 +40,7 @@ pub fn url_valid(url: &str) -> bool {
 
 pub fn is_svg(path: &str) -> bool {
     if !url_valid(path) {
-        let Ok(pb) = PathBuf::from_str(path);
+        let pb = PathBuf::from(path);
 
         if let Some(ext) = pb.extension() {
             return ext.eq_ignore_ascii_case("svg");
@@ -185,7 +184,7 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
     if let Some(icons_dir) = icons_location() {
         if !icons_dir.exists() {
             if let Err(e) = create_dir_all(&icons_dir) {
-                eprintln!("Failed to create icons directory: {}", e);
+                tracing::error!("Failed to create icons directory: {e}");
                 return None;
             }
         }
@@ -193,7 +192,7 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
         let dest_path = icons_dir.join(format!("{}.{}", icon_name, extension));
 
         if let Err(e) = fs::copy(path, &dest_path) {
-            eprintln!("Failed to copy icon: {}", e);
+            tracing::error!("Failed to copy icon: {e}");
             return None;
         }
 
@@ -309,7 +308,7 @@ pub async fn find_icons(icon_name: String) -> Vec<String> {
 }
 
 pub async fn image_handle(path: String) -> Option<Icon> {
-    let Ok(result_path) = PathBuf::from_str(&path);
+    let result_path = PathBuf::from(&path);
 
     if result_path.is_file() {
         if is_svg(&path) {
@@ -317,7 +316,7 @@ pub async fn image_handle(path: String) -> Option<Icon> {
 
             return Some(Icon::new(IconType::Svg(handle), path, false));
         } else {
-            let mut data: Vec<_> = Vec::new();
+            let mut data = Vec::new();
 
             if let Ok(mut file) = fs::File::open(&result_path) {
                 let _ = file.read_to_end(&mut data);

@@ -69,7 +69,7 @@ impl Browser {
                     .join("profiles")
                     .join(self.app_id.as_ref());
                 if let Err(e) = std::fs::remove_dir_all(&path) {
-                    eprintln!("Failed to delete profile directory: {}", e);
+                    tracing::error!("Failed to delete profile directory: {e}");
                 }
             }
         }
