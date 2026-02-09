@@ -74,6 +74,7 @@ icon-name-to-find=Icon name to find
 my-icons=My icons
 download=Download
 search=Search
+no-icons-found=No icons found. Try a different search term or upload a custom icon.
 
 # icons_installator.rs
 icons-installer-header=Please wait. Downloading icons...
@@ -89,3 +90,7 @@ warning=You don't meet requirements
     .app-url=  - You must provide valid URL starting with http:// or https://
     .app-icon=  - You must select an Icon for your launcher
     .app-browser=  - Please select a browser. Make sure at least one is installed system-wide or via Flatpak
+
+# toast notifications
+toast-app-saved=Web app saved successfully
+toast-app-deleted=Web app deleted

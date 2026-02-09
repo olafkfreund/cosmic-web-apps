@@ -23,6 +23,7 @@ pub enum Message {
 pub struct IconPicker {
     pub icon_searching: String,
     pub icons: Vec<webapps::Icon>,
+    pub has_searched: bool,
 }
 
 impl IconPicker {
@@ -36,7 +37,7 @@ impl IconPicker {
             Message::DownloadIconsPack => return task::message(pages::Message::DownloaderStarted),
             Message::OpenIconPickerDialog => {
                 return task::future(async move {
-                    let result = SelectedFiles::open_file()
+                    let response = match SelectedFiles::open_file()
                         .title("Open multiple images")
                         .accept_label("Open")
                         .modal(true)
@@ -45,10 +46,15 @@ impl IconPicker {
                         .filter(FileFilter::new("SVG Images").glob("*.svg"))
                         .send()
                         .await
-                        .unwrap()
-                        .response();
+                    {
+                        Ok(r) => r.response(),
+                        Err(e) => {
+                            tracing::error!("Failed to open file chooser: {e}");
+                            return pages::Message::None;
+                        }
+                    };
 
-                    if let Ok(result) = result {
+                    if let Ok(result) = response {
                         let files = result
                             .uris()
                             .iter()
@@ -63,6 +69,7 @@ impl IconPicker {
             }
             Message::IconSearch => {
                 self.icons.clear();
+                self.has_searched = true;
 
                 let name = self.icon_searching.clone().to_lowercase();
 
@@ -100,7 +107,7 @@ impl IconPicker {
             .on_submit(|_| Message::IconSearch);
         let button = widget::button::standard(fl!("open")).on_press(Message::OpenIconPickerDialog);
 
-        widget::column()
+        let mut col = widget::column()
             .spacing(30)
             .push(
                 widget::container(
@@ -118,15 +125,24 @@ impl IconPicker {
                         }),
                 )
                 .padding(8),
-            )
-            .push_maybe(if !icons.is_empty() {
-                Some(
-                    widget::container(widget::scrollable(widget::flex_row(icons)))
-                        .height(Length::FillPortion(1)),
+            );
+
+        if !icons.is_empty() {
+            col = col.push(
+                widget::container(widget::scrollable(widget::flex_row(icons)))
+                    .height(Length::FillPortion(1)),
+            );
+        } else if self.has_searched {
+            col = col.push(
+                widget::container(
+                    widget::text::body(fl!("no-icons-found"))
                 )
-            } else {
-                None
-            })
-            .into()
+                .padding(20)
+                .width(Length::Fill)
+                .align_x(cosmic::iced::Alignment::Center),
+            );
+        }
+
+        col.into()
     }
 }

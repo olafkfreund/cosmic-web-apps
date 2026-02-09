@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Sanitize an app ID for safe use in filesystem paths and desktop entry filenames.
+/// Removes path separators and traversal sequences.
+fn sanitize_app_id(id: &str) -> String {
+    id.replace(['/', '\\', '\0'], "")
+        .replace("..", "")
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Browser {
     pub app_id: crate::WebviewArgs,
@@ -15,9 +22,10 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(app_id: &str, with_profile: bool) -> Self {
+        let safe_id = sanitize_app_id(app_id);
         let mut browser = Self {
             app_id: crate::WebviewArgs {
-                id: app_id.to_string(),
+                id: safe_id.clone(),
             },
             window_title: None,
             url: None,
@@ -29,9 +37,10 @@ impl Browser {
         };
 
         if with_profile {
-            let xdg_data = dirs::data_dir().unwrap_or_default();
-            let path = xdg_data.join(crate::APP_ID).join("profiles").join(&app_id);
-            browser.profile = Some(path);
+            if let Some(xdg_data) = dirs::data_dir() {
+                let path = xdg_data.join(crate::APP_ID).join("profiles").join(&safe_id);
+                browser.profile = Some(path);
+            }
         };
 
         browser
@@ -54,13 +63,14 @@ impl Browser {
 
     pub fn delete(&self) {
         if self.profile.is_some() {
-            let xdg_data = dirs::data_dir().unwrap_or_default();
-            let path = xdg_data
-                .join(crate::APP_ID)
-                .join("profiles")
-                .join(self.app_id.as_ref());
-            if let Err(e) = std::fs::remove_dir_all(&path) {
-                eprintln!("Failed to delete profile directory: {}", e);
+            if let Some(xdg_data) = dirs::data_dir() {
+                let path = xdg_data
+                    .join(crate::APP_ID)
+                    .join("profiles")
+                    .join(self.app_id.as_ref());
+                if let Err(e) = std::fs::remove_dir_all(&path) {
+                    eprintln!("Failed to delete profile directory: {}", e);
+                }
             }
         }
     }

@@ -47,6 +47,7 @@ static MENU_ID: LazyLock<cosmic::widget::Id> =
 pub enum Message {
     ChangeUserTheme(usize),
     CloseDialog,
+    CloseToast(widget::toaster::ToastId),
     Editor(editor::Message),
     Delete(widget::segmented_button::Entity),
     DeletionDone(widget::segmented_button::Entity),
@@ -76,7 +77,7 @@ pub enum Message {
     ToggleContextPage(ContextPage),
     UpdateConfig(AppConfig),
     UpdateTheme(Box<Theme>),
-    // emty message
+    // empty message
     None,
 }
 
@@ -105,6 +106,7 @@ pub struct QuickWebApps {
     downloader_output: String,
     themes_list: Vec<Theme>,
     theme_idx: Option<usize>,
+    toasts: widget::toaster::Toasts<Message>,
 }
 
 impl Application for QuickWebApps {
@@ -129,11 +131,20 @@ impl Application for QuickWebApps {
 
         let themes_list = Vec::new();
 
+        let mut key_binds = HashMap::new();
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("n".into()),
+            },
+            MenuAction::NewApp,
+        );
+
         let windows = QuickWebApps {
             core,
             context_page: ContextPage::About,
             nav,
-            key_binds: HashMap::new(),
+            key_binds,
             config,
             page: add_page,
             dialogs: None,
@@ -142,6 +153,7 @@ impl Application for QuickWebApps {
             downloader_output: String::new(),
             themes_list,
             theme_idx: Some(0),
+            toasts: widget::toaster::Toasts::new(Message::CloseToast),
         };
 
         let tasks = vec![
@@ -166,23 +178,39 @@ impl Application for QuickWebApps {
             subscriptions.push(Subscription::run_with_id(
                 self.downloader_id,
                 cosmic::iced::stream::channel(4, move |mut channel| async move {
-                    let script = webapps::add_icon_packs_install_script().await;
-                    let mut child = webapps::execute_script(script).await;
-                    let stdout = child
-                        .stdout
-                        .take()
-                        .expect("child did not have a handle to stdout");
+                    let script = match webapps::add_icon_packs_install_script().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!("Failed to create install script: {e}");
+                            let _ = channel.send(Message::DownloaderStreamFinished).await;
+                            return future::pending().await;
+                        }
+                    };
+                    let mut child = match webapps::execute_script(script).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("Failed to execute install script: {e}");
+                            let _ = channel.send(Message::DownloaderStreamFinished).await;
+                            return future::pending().await;
+                        }
+                    };
+                    let stdout = match child.stdout.take() {
+                        Some(s) => s,
+                        None => {
+                            tracing::error!("Child process has no stdout handle");
+                            let _ = channel.send(Message::DownloaderStreamFinished).await;
+                            return future::pending().await;
+                        }
+                    };
 
                     let mut reader = BufReader::new(stdout).lines();
                     let (tx, rx) = oneshot::channel::<ExitStatus>();
 
                     tokio::spawn(async move {
-                        let status = child
-                            .wait()
-                            .await
-                            .expect("child process encountered an error");
-
-                        let _ = tx.send(status);
+                        match child.wait().await {
+                            Ok(status) => { let _ = tx.send(status); }
+                            Err(e) => tracing::error!("Child process error: {e}"),
+                        }
                     });
 
                     while let Ok(Some(line)) = reader.next_line().await {
@@ -219,6 +247,9 @@ impl Application for QuickWebApps {
                 ))));
             }
             Message::CloseDialog => self.dialogs = None,
+            Message::CloseToast(id) => {
+                self.toasts.remove(id);
+            }
             Message::ConfirmDeletion(id) => {
                 let data = self.nav.data::<Page>(id);
 
@@ -244,8 +275,12 @@ impl Application for QuickWebApps {
                             category: app_editor.app_category.clone(),
                         };
 
+                        self.dialogs = None;
                         return task::future(async move {
-                            launcher.delete().await.unwrap();
+                            if let Err(e) = launcher.delete().await {
+                                tracing::error!("Failed to delete web app: {e}");
+                                return cosmic::action::app(Message::CloseDialog);
+                            }
                             cosmic::action::app(Message::DeletionDone(id))
                         });
                     }
@@ -254,7 +289,8 @@ impl Application for QuickWebApps {
             Message::DeletionDone(id) => {
                 self.nav.remove(id);
                 self.dialogs = None;
-                self.page = Page::Editor(AppEditor::default())
+                self.page = Page::Editor(AppEditor::default());
+                tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-app-deleted"))));
             }
             Message::DownloaderDone => {
                 self.downloader_started = false;
@@ -266,7 +302,14 @@ impl Application for QuickWebApps {
                 self.dialogs = Some(Dialogs::IconsDownloader)
             }
             Message::DownloaderStream(buffer) => {
-                self.downloader_output.push_str(&format!("{buffer:?}\n"));
+                const MAX_OUTPUT_LEN: usize = 32_768;
+                self.downloader_output.push_str(&format!("{buffer}\n"));
+                if self.downloader_output.len() > MAX_OUTPUT_LEN {
+                    let trim_at = self.downloader_output.len() - MAX_OUTPUT_LEN;
+                    if let Some(newline) = self.downloader_output[trim_at..].find('\n') {
+                        self.downloader_output = self.downloader_output[trim_at + newline + 1..].to_string();
+                    }
+                }
             }
             Message::DownloaderStop => {
                 self.downloader_started = false;
@@ -308,7 +351,7 @@ impl Application for QuickWebApps {
             }
             Message::ImportThemeFilePicker => {
                 return task::future(async {
-                    let result = SelectedFiles::open_file()
+                    let response = match SelectedFiles::open_file()
                         .title("Open Theme")
                         .accept_label("Open")
                         .modal(true)
@@ -316,10 +359,15 @@ impl Application for QuickWebApps {
                         .filter(FileFilter::new("Ron Theme").glob("*.ron"))
                         .send()
                         .await
-                        .unwrap()
-                        .response();
+                    {
+                        Ok(r) => r.response(),
+                        Err(e) => {
+                            tracing::error!("Failed to open theme file picker: {e}");
+                            return cosmic::action::none();
+                        }
+                    };
 
-                    if let Ok(result) = result {
+                    if let Ok(result) = response {
                         let files = result
                             .uris()
                             .iter()
@@ -342,10 +390,12 @@ impl Application for QuickWebApps {
             Message::Launch(args) => {
                 return Task::perform(
                     async move {
-                        Command::new("dev.heppen.webapps.webview")
+                        if let Err(e) = Command::new("dev.heppen.webapps.webview")
                             .args(args)
                             .spawn()
-                            .expect("Failed to spawn webview");
+                        {
+                            tracing::error!("Failed to spawn webview: {e}");
+                        }
                     },
                     |_| cosmic::Action::App(Message::Close),
                 );
@@ -371,16 +421,19 @@ impl Application for QuickWebApps {
 
                 if let Ok(files) = dir {
                     for path in files {
-                        let dir_entry = path.unwrap();
+                        let Ok(dir_entry) = path else { continue };
                         let file_name = dir_entry.file_name();
-                        let theme_name = file_name.to_str().unwrap().replace(".ron", "");
+                        let Some(name_str) = file_name.to_str() else { continue };
+                        let theme_name = name_str.replace(".ron", "");
                         let metadata = std::fs::metadata(dir_entry.path());
 
                         if let Ok(meta) = metadata {
                             if meta.is_file() {
                                 let mut content: String = String::new();
 
-                                let mut file = std::fs::File::open(dir_entry.path()).unwrap();
+                                let Ok(mut file) = std::fs::File::open(dir_entry.path()) else {
+                                    continue;
+                                };
                                 let _ = file.read_to_string(&mut content);
 
                                 let theme = Theme::build(theme_name.to_string(), content);
@@ -411,11 +464,12 @@ impl Application for QuickWebApps {
                     let icon_name = buf.file_stem();
 
                     if let Some(file_stem) = icon_name {
-                        if let Some(final_path) = webapps::move_icon(
-                            &path,
-                            file_stem.to_str().unwrap(),
-                            buf.extension().unwrap_or_default().to_str().unwrap(),
-                        ) {
+                        let stem_str = file_stem.to_str().unwrap_or("icon");
+                        let ext_str = buf
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("png");
+                        if let Some(final_path) = webapps::move_icon(&path, stem_str, ext_str) {
                             moved.push(final_path.display().to_string());
                         }
                     };
@@ -494,7 +548,10 @@ impl Application for QuickWebApps {
                         }
                     }
 
-                    return task::message(Message::ReloadNavbarItems);
+                    tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-app-saved"))));
+                    return Task::batch(
+                        tasks.into_iter().chain(std::iter::once(task::message(Message::ReloadNavbarItems)))
+                    );
                 }
             }
             Message::SetIcon(icon) => {
@@ -563,13 +620,17 @@ impl Application for QuickWebApps {
                 &self.key_binds,
                 MENU_ID.clone(),
                 Message::Surface,
-                vec![(
-                    fl!("help"),
-                    vec![
-                        menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
-                        menu::Item::Button(fl!("about"), None, MenuAction::About),
-                    ],
-                )],
+                vec![
+                    (
+                        fl!("app"),
+                        vec![
+                            menu::Item::Button(fl!("new-app"), None, MenuAction::NewApp),
+                            menu::Item::Divider,
+                            menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
+                            menu::Item::Button(fl!("about"), None, MenuAction::About),
+                        ],
+                    ),
+                ],
             )]
     }
 
@@ -638,12 +699,13 @@ impl Application for QuickWebApps {
     fn view(&self) -> Element<'_, Message> {
         let Page::Editor(content) = &self.page;
 
-        widget::container(content.view().map(Message::Editor))
+        let main_content = widget::container(content.view().map(Message::Editor))
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Horizontal::Center)
-            .center_x(Length::Fill)
-            .into()
+            .center_x(Length::Fill);
+
+        widget::toaster::toaster(&self.toasts, main_content).into()
     }
 
     fn dialog(&self) -> Option<Element<'_, Message>> {
@@ -759,6 +821,7 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    NewApp,
     Settings,
 }
 
@@ -768,6 +831,7 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::NewApp => Message::ReloadNavbarItems,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
         }
     }

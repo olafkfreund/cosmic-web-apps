@@ -5,20 +5,44 @@ use tao::{
     platform::unix::EventLoopBuilderExtUnix,
     window::{WindowAttributes, WindowBuilder},
 };
+use url::Url;
 use wry::{
     dpi::{LogicalSize, Size},
     WebContext, WebViewBuilder,
 };
 
+fn is_url_safe(url_str: &str) -> bool {
+    match Url::parse(url_str) {
+        Ok(url) => matches!(url.scheme(), "http" | "https"),
+        Err(_) => false,
+    }
+}
+
 fn main() -> wry::Result<()> {
     let args = webapps::WebviewArgs::parse();
 
-    gtk::init().unwrap();
+    if let Err(e) = gtk::init() {
+        eprintln!("Failed to initialize GTK: {e}");
+        std::process::exit(1);
+    }
 
     gtk::glib::set_program_name(args.id.clone().into());
     gtk::glib::set_application_name(&args.id);
 
-    let browser = webapps::browser::Browser::from_appid(&args.id).unwrap();
+    let browser = match webapps::browser::Browser::from_appid(&args.id) {
+        Some(b) => b,
+        None => {
+            eprintln!("Failed to load web app configuration for '{}'", args.id);
+            std::process::exit(1);
+        }
+    };
+
+    // Validate URL scheme before loading
+    let url = browser.url.unwrap_or_default();
+    if !url.is_empty() && !is_url_safe(&url) {
+        eprintln!("Refusing to load unsafe URL scheme: {url}");
+        std::process::exit(1);
+    }
 
     let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
 
@@ -30,32 +54,55 @@ fn main() -> wry::Result<()> {
     let mut window_builder = WindowBuilder::new();
     window_builder.window = attrs;
 
-    let window = window_builder
+    let window = match window_builder
         .with_title(browser.window_title.unwrap_or(webapps::fl!("app")))
         .with_decorations(browser.window_decorations.unwrap_or(true))
         .build(&event_loop)
-        .unwrap();
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to create window: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let mut context = WebContext::new(browser.profile);
 
     let mut builder = WebViewBuilder::new_with_web_context(&mut context)
-        .with_url(browser.url.unwrap_or_default())
+        .with_url(&url)
         .with_incognito(browser.private_mode.unwrap_or(false))
-        .with_new_window_req_handler(|url, features| {
-            println!("new window req: {url} {features:?}");
-            wry::NewWindowResponse::Allow
+        .with_navigation_handler(|nav_url| {
+            if is_url_safe(&nav_url) {
+                true
+            } else {
+                eprintln!("Blocked navigation to unsafe URL: {nav_url}");
+                false
+            }
+        })
+        .with_new_window_req_handler(|new_url, _features| {
+            // Only allow new windows with safe URL schemes
+            if is_url_safe(&new_url) {
+                wry::NewWindowResponse::Allow
+            } else {
+                eprintln!("Blocked new window with unsafe URL: {new_url}");
+                wry::NewWindowResponse::Deny
+            }
         });
 
-    if let Some(simulate) = browser.try_simulate_mobile {
-        if simulate {
-            builder = builder.with_user_agent(webapps::MOBILE_UA);
-        }
+    if let Some(true) = browser.try_simulate_mobile {
+        builder = builder.with_user_agent(webapps::MOBILE_UA);
     };
 
     let _webview = {
         use tao::platform::unix::WindowExtUnix;
         use wry::WebViewBuilderExtUnix;
-        let vbox = window.default_vbox().unwrap();
+        let vbox = match window.default_vbox() {
+            Some(vbox) => vbox,
+            None => {
+                eprintln!("Failed to get GTK vbox from window");
+                std::process::exit(1);
+            }
+        };
         builder.build_gtk(vbox)?
     };
 

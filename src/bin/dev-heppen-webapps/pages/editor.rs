@@ -188,12 +188,17 @@ impl AppEditor {
                 self.app_window_decorations = decorations;
             }
             Message::WindowWidth(width) => {
-                self.app_window_width = width;
-                self.app_window_size.0 = self.app_window_width.parse().unwrap_or_default();
+                // Only accept numeric input
+                let filtered: String = width.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                self.app_window_width = filtered;
+                let parsed: f64 = self.app_window_width.parse().unwrap_or(webapps::DEFAULT_WINDOW_WIDTH);
+                self.app_window_size.0 = parsed.clamp(200.0, 8192.0);
             }
             Message::WindowHeight(height) => {
-                self.app_window_height = height;
-                self.app_window_size.1 = self.app_window_height.parse().unwrap_or_default();
+                let filtered: String = height.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+                self.app_window_height = filtered;
+                let parsed: f64 = self.app_window_height.parse().unwrap_or(webapps::DEFAULT_WINDOW_HEIGHT);
+                self.app_window_size.1 = parsed.clamp(200.0, 8192.0);
             }
         }
         Task::none()
@@ -274,7 +279,23 @@ impl AppEditor {
                     .class(style::Container::Card),
                 )
                 .push(widget::text_input(fl!("title"), &self.app_title).on_input(Message::Title))
+                .push_maybe(
+                    if !self.app_title.is_empty() && self.app_title.len() < 3 {
+                        Some(widget::text::caption(fl!("warning.app-name"))
+                            .class(style::Text::Accent))
+                    } else {
+                        None
+                    }
+                )
                 .push(widget::text_input(fl!("url"), &self.app_url).on_input(Message::Url))
+                .push_maybe(
+                    if !self.app_url.is_empty() && !webapps::url_valid(&self.app_url) {
+                        Some(widget::text::caption(fl!("warning.app-url"))
+                            .class(style::Text::Accent))
+                    } else {
+                        None
+                    }
+                )
                 .push(
                     widget::settings::section()
                         .add(widget::settings::item(

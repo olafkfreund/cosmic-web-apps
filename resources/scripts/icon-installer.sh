@@ -8,11 +8,20 @@ gh_repo="papirus-icon-theme"
 gh_desc="Papirus icon theme"
 
 : "${XDG_DATA_HOME:=$HOME/.local/share}"
-: "${EXTRA_THEMES=Papirus Papirus-Dark Papirus-Light}"
 : "${TAG:=master}"
 
-temp_file="$(mktemp -u)"
+EXTRA_THEMES="Papirus Papirus-Dark Papirus-Light"
+
+temp_file="$(mktemp)"
 temp_dir="$(mktemp -d)"
+
+cleanup() {
+    echo "Clearing cache ..."
+    rm -rf "$temp_file" "$temp_dir"
+    echo "Done!"
+}
+
+trap cleanup EXIT HUP INT TERM
 
 download() {
     echo "Getting the latest version from GitHub ..."
@@ -22,31 +31,21 @@ download() {
     tar -xzf "$temp_file" -C "$temp_dir"
 }
 
-
 install() {
-    # shellcheck disable=2068
-    set -- $@  # split args by space
+    dest="$1"
+    shift
 
     for theme in "$@"; do
         test -d "$temp_dir/$gh_repo-$TAG/$theme" || continue
         echo "Installing '$theme' ..."
-        cp -R "$temp_dir/$gh_repo-$TAG/$theme" $1
+        cp -R "$temp_dir/$gh_repo-$TAG/$theme" "$dest"
     done
 }
-
-cleanup() {
-    echo "Clearing cache ..."
-    rm -rf "$temp_file" "$temp_dir"
-    echo "Done!"
-}
-
 
 download
 
 install_path="$XDG_DATA_HOME/$APP_ID/icons"
 
-error_message=$(mkdir -p $install_path 2>&1)
+mkdir -p "$install_path"
 
-install $install_path $EXTRA_THEMES
-
-trap cleanup EXIT HUP INT TERM
+install "$install_path" $EXTRA_THEMES

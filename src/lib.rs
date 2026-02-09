@@ -39,8 +39,8 @@ pub fn is_svg(path: &str) -> bool {
     if !url_valid(path) {
         let Ok(pb) = PathBuf::from_str(path);
 
-        if pb.extension() == Some(OsStr::new("svg")) {
-            return true;
+        if let Some(ext) = pb.extension() {
+            return ext.eq_ignore_ascii_case("svg");
         }
     }
     false
@@ -51,7 +51,10 @@ pub fn themes_path(theme_file: &str) -> Option<PathBuf> {
         let path = xdg_data.join(APP_ID).join("themes");
 
         if !path.exists() {
-            create_dir_all(&path).unwrap();
+            if let Err(e) = create_dir_all(&path) {
+                tracing::error!("Failed to create themes directory: {e}");
+                return None;
+            }
         }
 
         return Some(path.join(theme_file));
@@ -65,7 +68,10 @@ pub fn database_path(entry: &str) -> Option<PathBuf> {
         let path = xdg_data.join(APP_ID).join("database");
 
         if !path.exists() {
-            create_dir_all(&path).unwrap();
+            if let Err(e) = create_dir_all(&path) {
+                tracing::error!("Failed to create database directory: {e}");
+                return None;
+            }
         }
 
         return Some(path.join(entry));
@@ -134,40 +140,49 @@ pub fn icon_pack_installed() -> bool {
     directories > 0
 }
 
-pub async fn add_icon_packs_install_script() -> String {
+pub async fn add_icon_packs_install_script() -> Result<String, Box<dyn std::error::Error>> {
     let install_script = include_bytes!("../resources/scripts/icon-installer.sh");
     let temp_file = format!("/tmp/{}.sh", APP_ID);
 
-    // Create a temporary file
-    let mut file = File::create(&temp_file).await.unwrap();
+    let mut file = File::create(&temp_file).await?;
+    file.write_all(install_script).await?;
 
-    file.write_all(install_script).await.unwrap();
-
-    // Make the script executable
-    let mut perms = file.metadata().await.unwrap().permissions();
+    let mut perms = file.metadata().await?.permissions();
     perms.set_mode(0o755);
-    file.set_permissions(perms).await.unwrap();
+    file.set_permissions(perms).await?;
 
-    temp_file.to_string()
+    Ok(temp_file)
 }
 
-pub async fn execute_script(script: String) -> Child {
+pub async fn execute_script(script: String) -> Result<Child, std::io::Error> {
     tokio::process::Command::new(script)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("cant execute script")
 }
+
+/// Maximum directory depth when searching for icons.
+const MAX_ICON_SEARCH_DEPTH: usize = 8;
+/// Maximum number of icon results to return.
+const MAX_ICON_RESULTS: usize = 200;
 
 pub async fn find_icon(path: PathBuf, icon_name: String) -> Vec<String> {
     let mut icons: Vec<String> = Vec::new();
 
-    for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&path)
+        .max_depth(MAX_ICON_SEARCH_DEPTH)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if icons.len() >= MAX_ICON_RESULTS {
+            break;
+        }
+
         if let Some(filename) = entry.file_name().to_str() {
             if filename.contains(&icon_name) {
                 if is_svg(filename) {
                     if let Some(path) = entry.path().to_str() {
-                        if let Ok(buffer) = tokio::fs::read_to_string(&mut path.to_string()).await {
+                        if let Ok(buffer) = tokio::fs::read_to_string(&path).await {
                             let options = usvg::Options::default();
                             if let Ok(parsed) = usvg::Tree::from_str(&buffer, &options) {
                                 let size = parsed.size();
@@ -287,7 +302,7 @@ impl From<String> for Category {
             "Video" => Category::Video,
             "Development" => Category::Development,
             "Education" => Category::Education,
-            "Game" => Category::Education,
+            "Game" => Category::Game,
             "Graphics" => Category::Graphics,
             "Network" => Category::Network,
             "Office" => Category::Office,

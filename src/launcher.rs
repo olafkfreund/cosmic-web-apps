@@ -11,6 +11,12 @@ use tokio::fs::remove_file;
 
 use crate::APP_ID;
 
+/// Sanitize a string for use in a desktop entry field.
+/// Strips newlines and carriage returns to prevent key injection.
+fn sanitize_desktop_field(s: &str) -> String {
+    s.chars().filter(|c| *c != '\n' && *c != '\r').collect()
+}
+
 pub fn webapplauncher_is_valid(
     icon: &str,
     name: &str,
@@ -31,6 +37,9 @@ pub fn webapplauncher_is_valid(
     false
 }
 
+/// Maximum size for a single RON database file (64 KB).
+const MAX_RON_FILE_SIZE: u64 = 64 * 1024;
+
 pub fn installed_webapps() -> Vec<WebAppLauncher> {
     let mut webapps = Vec::new();
 
@@ -38,11 +47,24 @@ pub fn installed_webapps() -> Vec<WebAppLauncher> {
         if let Ok(entries) = fs::read_dir(data_dir.join(APP_ID).join("database")) {
             for entry in entries {
                 if let Ok(entry) = entry {
+                    let metadata = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+
+                    if metadata.len() > MAX_RON_FILE_SIZE {
+                        tracing::warn!("Skipping oversized file {:?} ({} bytes)", entry.path(), metadata.len());
+                        continue;
+                    }
+
                     let file = std::fs::File::open(entry.path());
                     let mut content = String::new();
 
                     if let Ok(mut f) = file {
-                        f.read_to_string(&mut content).unwrap();
+                        if let Err(e) = f.read_to_string(&mut content) {
+                            tracing::warn!("Failed to read {:?}: {e}", entry.path());
+                            continue;
+                        }
                         if let Ok(launcher) = ron::from_str::<WebAppLauncher>(&content) {
                             webapps.push(launcher);
                         }
@@ -64,38 +86,38 @@ pub struct WebAppLauncher {
 }
 
 impl WebAppLauncher {
-    pub async fn create(&self) -> std::io::Result<()> {
+    pub async fn create(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let safe_name = sanitize_desktop_field(&self.name);
+        let safe_wm_class = sanitize_desktop_field(&self.browser.app_id.id);
+        let safe_exec = sanitize_desktop_field(&self.browser.get_exec());
+
         let mut desktop_entry = String::new();
 
         desktop_entry.push_str("[Desktop Entry]\n");
         desktop_entry.push_str("Version=1.0\n");
         desktop_entry.push_str("Type=Application\n");
-        desktop_entry.push_str(&format!("Name={}\n", self.name));
-        desktop_entry.push_str(&format!("Comment=Quick WebApp\n",));
-        desktop_entry.push_str(&format!("Exec={}\n", self.browser.get_exec()));
-        desktop_entry.push_str(&format!("StartupWMClass={}\n", self.browser.app_id.id));
+        desktop_entry.push_str(&format!("Name={safe_name}\n"));
+        desktop_entry.push_str("Comment=Quick WebApp\n");
+        desktop_entry.push_str(&format!("Exec={safe_exec}\n"));
+        desktop_entry.push_str(&format!("StartupWMClass={safe_wm_class}\n"));
         desktop_entry.push_str(&format!("Categories={}\n", self.category.as_ref()));
 
-        let proxy = DynamicLauncherProxy::new()
-            .await
-            .expect("Failed to create DynamicLauncherProxy");
+        let proxy = DynamicLauncherProxy::new().await?;
 
-        let mut f = std::fs::File::open(&self.icon).expect("no file found");
-        let metadata = std::fs::metadata(&self.icon).expect("unable to read metadata");
+        let mut f = std::fs::File::open(&self.icon)?;
+        let metadata = std::fs::metadata(&self.icon)?;
         let mut buffer = vec![0; metadata.len() as usize];
-        f.read(&mut buffer).expect("buffer overflow");
+        f.read(&mut buffer)?;
 
         let icon = Icon::Bytes(buffer);
         let response = proxy
             .prepare_install(None, &self.name, icon, PrepareInstallOptions::default())
-            .await
-            .expect("Failed to prepare install")
-            .response()
-            .expect("Failed to get response");
+            .await?
+            .response()?;
 
         let token = response.token();
 
-        println!("{}", desktop_entry);
+        tracing::debug!("Installing desktop entry:\n{desktop_entry}");
 
         proxy
             .install(
@@ -103,21 +125,17 @@ impl WebAppLauncher {
                 &format!("{}.{}.desktop", &APP_ID, self.browser.app_id.id),
                 &desktop_entry,
             )
-            .await
-            .expect("Failed to install");
+            .await?;
 
         Ok(())
     }
 
-    pub async fn delete(&self) -> std::io::Result<()> {
-        let proxy = DynamicLauncherProxy::new()
-            .await
-            .expect("Failed to create DynamicLauncherProxy");
+    pub async fn delete(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let proxy = DynamicLauncherProxy::new().await?;
 
         proxy
             .uninstall(&format!("{}.{}.desktop", &APP_ID, self.browser.app_id.id))
-            .await
-            .expect("Failed to uninstall");
+            .await?;
 
         if let Some(path) = crate::database_path(&format!("{}.ron", self.browser.app_id.as_ref())) {
             remove_file(path).await?;
