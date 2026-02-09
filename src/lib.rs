@@ -8,7 +8,6 @@ use std::{
     io::{Cursor, Read},
     os::unix::fs::PermissionsExt as _,
     path::PathBuf,
-    str::FromStr,
 };
 use tokio::{fs::File, io::AsyncWriteExt as _, process::Child};
 
@@ -32,12 +31,16 @@ pub const APP_ICON: &[u8] =
 pub const MOBILE_UA: &str = "Mozilla/5.0 (Android 16; Mobile; rv:68.0) Gecko/68.0 Firefox/142.0";
 
 pub fn url_valid(url: &str) -> bool {
-    Url::parse(url).is_ok()
+    if let Ok(parsed) = Url::parse(url) {
+        matches!(parsed.scheme(), "http" | "https")
+    } else {
+        false
+    }
 }
 
 pub fn is_svg(path: &str) -> bool {
     if !url_valid(path) {
-        let Ok(pb) = PathBuf::from_str(path);
+        let pb = PathBuf::from(path);
 
         if let Some(ext) = pb.extension() {
             return ext.eq_ignore_ascii_case("svg");
@@ -88,6 +91,95 @@ pub fn profiles_path(app_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// Validate that downloaded bytes look like a real image (PNG, JPEG, GIF, or ICO).
+fn is_valid_image_bytes(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    // PNG: 89 50 4E 47
+    if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return true;
+    }
+    // JPEG: FF D8 FF
+    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return true;
+    }
+    // GIF: GIF8
+    if data.starts_with(b"GIF8") {
+        return true;
+    }
+    // ICO: 00 00 01 00
+    if data.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return true;
+    }
+    false
+}
+
+/// Sanitize a domain string for safe use in filenames.
+/// Only allows alphanumeric, dots, and hyphens.
+fn sanitize_domain_for_filename(domain: &str) -> String {
+    domain
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-')
+        .collect()
+}
+
+/// Download a favicon for the given URL and save it to the icons directory.
+/// Returns the path to the saved favicon file on success.
+pub async fn download_favicon(url_str: &str) -> Option<String> {
+    let parsed = url::Url::parse(url_str).ok()?;
+    let domain = parsed.host_str()?;
+
+    // Validate domain contains only safe characters
+    if !domain.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-') {
+        tracing::warn!("Invalid domain characters in favicon URL: {}", domain);
+        return None;
+    }
+
+    let favicon_url = format!(
+        "https://www.google.com/s2/favicons?domain={domain}&sz=128"
+    );
+
+    let response = tokio::process::Command::new("wget")
+        .arg("-q")
+        .arg("-O")
+        .arg("-")
+        .arg("--timeout=10")
+        .arg(&favicon_url)
+        .output()
+        .await
+        .ok()?;
+
+    if !response.status.success() || response.stdout.is_empty() {
+        return None;
+    }
+
+    // Reject excessively large responses (max 2 MB for a favicon)
+    const MAX_FAVICON_SIZE: usize = 2 * 1024 * 1024;
+    if response.stdout.len() > MAX_FAVICON_SIZE {
+        tracing::warn!("Favicon response too large: {} bytes", response.stdout.len());
+        return None;
+    }
+
+    // Validate the response is actually an image
+    if !is_valid_image_bytes(&response.stdout) {
+        tracing::warn!("Favicon response is not a valid image format");
+        return None;
+    }
+
+    let icons_dir = icons_location()?;
+    if let Err(e) = tokio::fs::create_dir_all(&icons_dir).await {
+        tracing::error!("Failed to create icons directory: {e}");
+        return None;
+    }
+
+    let safe_domain = sanitize_domain_for_filename(domain);
+    let favicon_path = icons_dir.join(format!("favicon-{safe_domain}.png"));
+    tokio::fs::write(&favicon_path, &response.stdout).await.ok()?;
+
+    Some(favicon_path.to_string_lossy().to_string())
+}
+
 pub fn icons_location() -> Option<PathBuf> {
     if let Some(xdg_data) = dirs::data_dir() {
         return Some(xdg_data.join(APP_ID).join("icons"));
@@ -99,7 +191,7 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
     if let Some(icons_dir) = icons_location() {
         if !icons_dir.exists() {
             if let Err(e) = create_dir_all(&icons_dir) {
-                eprintln!("Failed to create icons directory: {}", e);
+                tracing::error!("Failed to create icons directory: {e}");
                 return None;
             }
         }
@@ -107,7 +199,7 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
         let dest_path = icons_dir.join(format!("{}.{}", icon_name, extension));
 
         if let Err(e) = fs::copy(path, &dest_path) {
-            eprintln!("Failed to copy icon: {}", e);
+            tracing::error!("Failed to copy icon: {e}");
             return None;
         }
 
@@ -118,10 +210,9 @@ pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf
 }
 
 pub fn icon_pack_installed() -> bool {
-    let packs: Vec<&str> = vec!["Papirus", "Papirus-Dark", "Papirus-Light"];
-    let mut directories = 0;
+    let packs: &[&str] = &["Papirus", "Papirus-Dark", "Papirus-Light"];
 
-    let mut icons_dir = match icons_location() {
+    let icons_dir = match icons_location() {
         Some(dir) => dir,
         None => PathBuf::from(env!("HOME"))
             .join(".local")
@@ -129,15 +220,7 @@ pub fn icon_pack_installed() -> bool {
             .join("icons"),
     };
 
-    for theme in packs.iter() {
-        icons_dir.push(theme);
-
-        if icons_dir.exists() {
-            directories += 1;
-        };
-    }
-
-    directories > 0
+    packs.iter().any(|theme| icons_dir.join(theme).exists())
 }
 
 pub async fn add_icon_packs_install_script() -> Result<String, Box<dyn std::error::Error>> {
@@ -223,7 +306,7 @@ pub async fn find_icons(icon_name: String) -> Vec<String> {
 }
 
 pub async fn image_handle(path: String) -> Option<Icon> {
-    let Ok(result_path) = PathBuf::from_str(&path);
+    let result_path = PathBuf::from(&path);
 
     if result_path.is_file() {
         if is_svg(&path) {
@@ -231,7 +314,7 @@ pub async fn image_handle(path: String) -> Option<Icon> {
 
             return Some(Icon::new(IconType::Svg(handle), path, false));
         } else {
-            let mut data: Vec<_> = Vec::new();
+            let mut data = Vec::new();
 
             if let Ok(mut file) = fs::File::open(&result_path) {
                 let _ = file.read_to_end(&mut data);

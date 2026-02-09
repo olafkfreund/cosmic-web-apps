@@ -28,7 +28,6 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::ExitStatus,
-    str::FromStr as _,
     sync::{Arc, LazyLock},
     time::Duration,
 };
@@ -51,6 +50,7 @@ pub enum Message {
     Editor(editor::Message),
     Delete(widget::segmented_button::Entity),
     DeletionDone(widget::segmented_button::Entity),
+    DuplicateApp(Box<editor::AppEditor>),
     DownloaderDone,
     DownloaderStarted,
     DownloaderStream(String),
@@ -74,6 +74,11 @@ pub enum Message {
     SetIcon(Option<webapps::Icon>),
     Surface(surface::Action),
     DownloaderStop,
+    ExportApps,
+    ExportAppsResult(Result<(), String>),
+    ImportApps,
+    ImportAppsFilePicked(Vec<String>),
+    SearchApps(String),
     ToggleContextPage(ContextPage),
     UpdateConfig(AppConfig),
     UpdateTheme(Box<Theme>),
@@ -104,6 +109,8 @@ pub struct QuickWebApps {
     downloader_started: bool,
     downloader_id: usize,
     downloader_output: String,
+    search_query: String,
+    cached_apps: Vec<webapps::launcher::WebAppLauncher>,
     themes_list: Vec<Theme>,
     theme_idx: Option<usize>,
     toasts: widget::toaster::Toasts<Message>,
@@ -139,6 +146,13 @@ impl Application for QuickWebApps {
             },
             MenuAction::NewApp,
         );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("s".into()),
+            },
+            MenuAction::Save,
+        );
 
         let windows = QuickWebApps {
             core,
@@ -151,6 +165,8 @@ impl Application for QuickWebApps {
             downloader_started: false,
             downloader_id: 1,
             downloader_output: String::new(),
+            search_query: String::new(),
+            cached_apps: Vec::new(),
             themes_list,
             theme_idx: Some(0),
             toasts: widget::toaster::Toasts::new(Message::CloseToast),
@@ -292,6 +308,13 @@ impl Application for QuickWebApps {
                 self.page = Page::Editor(AppEditor::default());
                 tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-app-deleted"))));
             }
+            Message::DuplicateApp(editor) => {
+                self.page = Page::Editor(*editor);
+                // Select the "Create new" entry so the user can save the duplicate
+                if let Some(first) = self.nav.iter().next() {
+                    self.nav.activate(first);
+                }
+            }
             Message::DownloaderDone => {
                 self.downloader_started = false;
                 return task::message(cosmic::action::app(Message::CloseDialog));
@@ -308,6 +331,139 @@ impl Application for QuickWebApps {
                     let trim_at = self.downloader_output.len() - MAX_OUTPUT_LEN;
                     if let Some(newline) = self.downloader_output[trim_at..].find('\n') {
                         self.downloader_output = self.downloader_output[trim_at + newline + 1..].to_string();
+                    }
+                }
+            }
+            Message::SearchApps(query) => {
+                self.search_query = query;
+                self.rebuild_nav_from_cache();
+            }
+            Message::ExportApps => {
+                return task::future(async {
+                    let response = match SelectedFiles::save_file()
+                        .title(fl!("file-dialog-export-title"))
+                        .accept_label(fl!("file-dialog-save"))
+                        .modal(true)
+                        .current_name("webapps-export.ron")
+                        .send()
+                        .await
+                    {
+                        Ok(r) => r.response(),
+                        Err(e) => {
+                            tracing::error!("Failed to open save dialog: {e}");
+                            return cosmic::action::app(Message::ExportAppsResult(
+                                Err(fl!("toast-export-error")),
+                            ));
+                        }
+                    };
+
+                    if let Ok(result) = response {
+                        let uris = result.uris();
+                        if let Some(uri) = uris.first() {
+                            let path = std::path::PathBuf::from(uri.path());
+                            match webapps::launcher::export_all(&path) {
+                                Ok(()) => {
+                                    return cosmic::action::app(Message::ExportAppsResult(Ok(())));
+                                }
+                                Err(e) => {
+                                    tracing::error!("Export failed: {e}");
+                                    return cosmic::action::app(Message::ExportAppsResult(
+                                        Err(fl!("toast-export-error")),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    cosmic::action::none()
+                });
+            }
+            Message::ExportAppsResult(result) => {
+                match result {
+                    Ok(()) => {
+                        tasks.push(self.toasts.push(
+                            widget::toaster::Toast::new(fl!("toast-export-success")),
+                        ));
+                    }
+                    Err(msg) => {
+                        tasks.push(self.toasts.push(widget::toaster::Toast::new(msg)));
+                    }
+                }
+            }
+            Message::ImportApps => {
+                return task::future(async {
+                    let response = match SelectedFiles::open_file()
+                        .title(fl!("file-dialog-import-title"))
+                        .accept_label(fl!("file-dialog-import"))
+                        .modal(true)
+                        .multiple(false)
+                        .filter(FileFilter::new(fl!("file-filter-ron")).glob("*.ron"))
+                        .send()
+                        .await
+                    {
+                        Ok(r) => r.response(),
+                        Err(e) => {
+                            tracing::error!("Failed to open import dialog: {e}");
+                            return cosmic::action::none();
+                        }
+                    };
+
+                    if let Ok(result) = response {
+                        let files: Vec<String> = result
+                            .uris()
+                            .iter()
+                            .map(|file| file.path().to_string())
+                            .collect();
+                        if !files.is_empty() {
+                            return cosmic::action::app(Message::ImportAppsFilePicked(files));
+                        }
+                    }
+                    cosmic::action::none()
+                });
+            }
+            Message::ImportAppsFilePicked(files) => {
+                if let Some(file) = files.first() {
+                    let decoded = match urlencoding::decode(file) {
+                        Ok(d) => d.to_string(),
+                        Err(e) => {
+                            tracing::error!("Failed to decode import file path: {e}");
+                            tasks.push(self.toasts.push(
+                                widget::toaster::Toast::new(fl!("toast-import-error")),
+                            ));
+                            return Task::batch(tasks);
+                        }
+                    };
+                    let path = std::path::PathBuf::from(&decoded);
+
+                    match webapps::launcher::import_all(&path) {
+                        Ok(apps) => {
+                            let (saved, total) = webapps::launcher::save_imported(&apps);
+                            let msg = if saved == total {
+                                fl!("toast-import-success")
+                            } else {
+                                format!(
+                                    "{} ({}/{})",
+                                    fl!("toast-import-success"),
+                                    saved,
+                                    total
+                                )
+                            };
+                            tasks.push(self.toasts.push(
+                                widget::toaster::Toast::new(msg),
+                            ));
+                            return Task::batch(
+                                tasks
+                                    .into_iter()
+                                    .chain(std::iter::once(task::message(
+                                        Message::ReloadNavbarItems,
+                                    ))),
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("Import failed: {e}");
+                            tasks.push(self.toasts.push(
+                                widget::toaster::Toast::new(fl!("toast-import-error")),
+                            ));
+                        }
                     }
                 }
             }
@@ -352,11 +508,11 @@ impl Application for QuickWebApps {
             Message::ImportThemeFilePicker => {
                 return task::future(async {
                     let response = match SelectedFiles::open_file()
-                        .title("Open Theme")
-                        .accept_label("Open")
+                        .title(fl!("file-dialog-open-theme"))
+                        .accept_label(fl!("open"))
                         .modal(true)
                         .multiple(false)
-                        .filter(FileFilter::new("Ron Theme").glob("*.ron"))
+                        .filter(FileFilter::new(fl!("file-filter-ron-theme")).glob("*.ron"))
                         .send()
                         .await
                     {
@@ -375,11 +531,14 @@ impl Application for QuickWebApps {
                             .collect::<Vec<String>>();
 
                         if !files.is_empty() {
-                            return cosmic::action::app(Message::OpenThemeResult(
-                                urlencoding::decode(&files[0])
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            ));
+                            let decoded = match urlencoding::decode(&files[0]) {
+                                Ok(d) => d.to_string(),
+                                Err(e) => {
+                                    tracing::error!("Failed to decode theme path: {e}");
+                                    return cosmic::action::none();
+                                }
+                            };
+                            return cosmic::action::app(Message::OpenThemeResult(decoded));
                         }
                         cosmic::action::none()
                     } else {
@@ -403,7 +562,7 @@ impl Application for QuickWebApps {
             Message::LaunchUrl(url) => match open::that_detached(&url) {
                 Ok(()) => {}
                 Err(err) => {
-                    eprintln!("failed to open {url:?}: {err}");
+                    tracing::error!("Failed to open {url:?}: {err}");
                 }
             },
             Message::LoadThemes => {
@@ -460,7 +619,7 @@ impl Application for QuickWebApps {
                 let mut moved: Vec<String> = Vec::new();
 
                 for path in file_paths {
-                    let Ok(buf) = PathBuf::from_str(&path);
+                    let buf = PathBuf::from(&path);
                     let icon_name = buf.file_stem();
 
                     if let Some(file_stem) = icon_name {
@@ -505,27 +664,13 @@ impl Application for QuickWebApps {
                 }
             }
             Message::ReloadNavbarItems => {
-                self.nav.clear();
-
-                self.nav
-                    .insert()
-                    .icon(widget::icon::from_name("list-add-symbolic"))
-                    .text(fl!("new-app"))
-                    .data::<Page>(Page::Editor(AppEditor::default()))
-                    .activate();
-
-                webapps::launcher::installed_webapps()
-                    .into_iter()
-                    .for_each(|app| {
-                        self.nav
-                            .insert()
-                            .icon(widget::icon::from_name(app.icon.clone()))
-                            .text(app.name.clone())
-                            .data::<Page>(Page::Editor(editor::AppEditor::from(app)))
-                            .closable();
-                    });
-
-                self.page = Page::Editor(AppEditor::default());
+                // Read from disk and cache
+                self.cached_apps = webapps::launcher::installed_webapps();
+                self.cached_apps.sort_by(|a, b| {
+                    let cat_cmp = a.category.name().cmp(&b.category.name());
+                    cat_cmp.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+                self.rebuild_nav_from_cache();
             }
             Message::ResetSettings => {
                 if let Some(handler) = AppConfig::config_handler() {
@@ -611,27 +756,36 @@ impl Application for QuickWebApps {
     }
 
     fn header_start(&self) -> Vec<Element<'_, Message>> {
-        vec![responsive_menu_bar()
-            .item_height(ItemHeight::Dynamic(40))
-            .item_width(ItemWidth::Uniform(240))
-            .spacing(4.0)
-            .into_element(
-                &self.core,
-                &self.key_binds,
-                MENU_ID.clone(),
-                Message::Surface,
-                vec![
-                    (
-                        fl!("app"),
-                        vec![
-                            menu::Item::Button(fl!("new-app"), None, MenuAction::NewApp),
-                            menu::Item::Divider,
-                            menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
-                            menu::Item::Button(fl!("about"), None, MenuAction::About),
-                        ],
-                    ),
-                ],
-            )]
+        vec![
+            responsive_menu_bar()
+                .item_height(ItemHeight::Dynamic(40))
+                .item_width(ItemWidth::Uniform(240))
+                .spacing(4.0)
+                .into_element(
+                    &self.core,
+                    &self.key_binds,
+                    MENU_ID.clone(),
+                    Message::Surface,
+                    vec![
+                        (
+                            fl!("app"),
+                            vec![
+                                menu::Item::Button(fl!("new-app"), None, MenuAction::NewApp),
+                                menu::Item::Divider,
+                                menu::Item::Button(fl!("export-apps"), None, MenuAction::ExportApps),
+                                menu::Item::Button(fl!("import-apps"), None, MenuAction::ImportApps),
+                                menu::Item::Divider,
+                                menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
+                                menu::Item::Button(fl!("about"), None, MenuAction::About),
+                            ],
+                        ),
+                    ],
+                ),
+            widget::text_input(fl!("search"), &self.search_query)
+                .on_input(Message::SearchApps)
+                .width(Length::Fixed(200.0))
+                .into(),
+        ]
     }
 
     fn nav_bar(&self) -> Option<Element<'_, cosmic::Action<Message>>> {
@@ -699,7 +853,29 @@ impl Application for QuickWebApps {
     fn view(&self) -> Element<'_, Message> {
         let Page::Editor(content) = &self.page;
 
-        let main_content = widget::container(content.view().map(Message::Editor))
+        // nav has 1 entry (the "Create new" placeholder) when no apps are installed
+        let has_installed_apps = self.nav.iter().count() > 1;
+
+        let mut col = widget::column().spacing(12);
+
+        if !has_installed_apps && !content.is_installed {
+            col = col.push(
+                widget::container(
+                    widget::column()
+                        .spacing(8)
+                        .push(widget::text::title3(fl!("create-new-webapp")))
+                        .push(widget::text::body(fl!("not-installed-header")))
+                        .align_x(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .align_x(Horizontal::Center)
+                .padding([24, 0, 0, 0]),
+            );
+        }
+
+        col = col.push(content.view().map(Message::Editor));
+
+        let main_content = widget::container(col)
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Horizontal::Center)
@@ -749,6 +925,34 @@ impl Application for QuickWebApps {
 }
 
 impl QuickWebApps {
+    /// Rebuild the nav bar from the in-memory app cache, applying the current search filter.
+    fn rebuild_nav_from_cache(&mut self) {
+        self.nav.clear();
+
+        self.nav
+            .insert()
+            .icon(widget::icon::from_name("list-add-symbolic"))
+            .text(fl!("new-app"))
+            .data::<Page>(Page::Editor(AppEditor::default()))
+            .activate();
+
+        let query = self.search_query.to_lowercase();
+
+        for app in &self.cached_apps {
+            if !query.is_empty() && !app.name.to_lowercase().contains(&query) {
+                continue;
+            }
+            self.nav
+                .insert()
+                .icon(widget::icon::from_name(app.icon.clone()))
+                .text(app.name.clone())
+                .data::<Page>(Page::Editor(editor::AppEditor::from(app.clone())))
+                .closable();
+        }
+
+        self.page = Page::Editor(AppEditor::default());
+    }
+
     fn about(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
@@ -821,7 +1025,10 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    ExportApps,
+    ImportApps,
     NewApp,
+    Save,
     Settings,
 }
 
@@ -831,7 +1038,10 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::ExportApps => Message::ExportApps,
+            MenuAction::ImportApps => Message::ImportApps,
             MenuAction::NewApp => Message::ReloadNavbarItems,
+            MenuAction::Save => Message::Editor(editor::Message::Done),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
         }
     }

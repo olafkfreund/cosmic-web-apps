@@ -89,3 +89,28 @@ warning=Не отговаряте на изискванията
     .app-url=  — Трябва да предоставите валиден адрес, започващ с http:// или https://
     .app-icon=  — Трябва да изберете иконка за вашия стартер.f
     .app-browser=  — Изберете браузър. Уверете се, че поне един е инсталиран в системата или чрез Flatpak.
+
+# import/export
+export-apps=Export all apps
+import-apps=Import apps
+toast-export-success=Apps exported successfully
+toast-import-success=Apps imported successfully
+toast-export-error=Failed to export apps
+toast-import-error=Failed to import apps
+duplicate=Duplicate
+
+# toast notifications
+toast-app-saved=Web app saved successfully
+toast-app-deleted=Web app deleted
+
+# icon picker
+no-icons-found=No icons found. Try a different search term or upload a custom icon.
+
+# file dialogs
+file-dialog-export-title=Export Web Apps
+file-dialog-import-title=Import Web Apps
+file-dialog-open-theme=Open Theme
+file-dialog-save=Save
+file-dialog-import=Import
+file-filter-ron=RON export
+file-filter-ron-theme=Ron Theme

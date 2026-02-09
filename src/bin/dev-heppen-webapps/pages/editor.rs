@@ -7,9 +7,15 @@ use cosmic::{
 };
 use rand::{rng, Rng};
 use strum::IntoEnumIterator as _;
+use url::Url;
 use webapps::fl;
 
 use crate::pages;
+
+/// Filter a string to only contain digits and dots (for numeric input fields).
+fn filter_numeric(input: String) -> String {
+    input.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct AppEditor {
@@ -44,8 +50,8 @@ impl Default for AppEditor {
             app_icon: String::new(),
             app_category: webapps::Category::default(),
             app_persistent: false,
-            app_window_width: String::from(webapps::DEFAULT_WINDOW_WIDTH.to_string()),
-            app_window_height: String::from(webapps::DEFAULT_WINDOW_HEIGHT.to_string()),
+            app_window_width: webapps::DEFAULT_WINDOW_WIDTH.to_string(),
+            app_window_height: webapps::DEFAULT_WINDOW_HEIGHT.to_string(),
             app_window_size: webapps::WindowSize::default(),
             app_window_decorations: true,
             app_private_mode: false,
@@ -62,6 +68,9 @@ impl Default for AppEditor {
 pub enum Message {
     Category(usize),
     Done,
+    DownloadFavicon,
+    Duplicate,
+    FaviconResult(Option<String>),
     PersistentProfile(bool),
     LaunchApp,
     OpenIconPicker,
@@ -124,18 +133,67 @@ impl AppEditor {
                 self.app_category = webapps::Category::from_index(idx as u8);
                 self.category_idx = Some(idx);
             }
+            Message::DownloadFavicon => {
+                let url = self.app_url.clone();
+                if webapps::url_valid(&url) {
+                    return Task::perform(
+                        async move { webapps::download_favicon(&url).await },
+                        |result| {
+                            cosmic::Action::App(crate::pages::Message::Editor(
+                                Message::FaviconResult(result),
+                            ))
+                        },
+                    );
+                }
+            }
+            Message::FaviconResult(result) => {
+                if let Some(path) = result {
+                    return task::future(async move {
+                        if let Some(icon) = webapps::image_handle(path).await {
+                            crate::pages::Message::SetIcon(Some(icon))
+                        } else {
+                            crate::pages::Message::None
+                        }
+                    });
+                }
+            }
+            Message::Duplicate => {
+                let mut duplicate = self.clone();
+                duplicate.app_title = format!("Copy of {}", self.app_title);
+                // Keep browser config but clear app_id so a new one is generated on save
+                duplicate.app_browser = None;
+                duplicate.is_installed = false;
+                // Preserve window settings from the original app
+                if let Some(browser) = &self.app_browser {
+                    duplicate.app_window_decorations = browser.window_decorations.unwrap_or(true);
+                    duplicate.app_private_mode = browser.private_mode.unwrap_or(false);
+                    duplicate.app_simulate_mobile = browser.try_simulate_mobile.unwrap_or(false);
+                    if let Some(ref size) = browser.window_size {
+                        duplicate.app_window_width = size.0.to_string();
+                        duplicate.app_window_height = size.1.to_string();
+                        duplicate.app_window_size = size.clone();
+                    }
+                    duplicate.app_persistent = browser.profile.is_some();
+                }
+                return task::future(async move {
+                    crate::pages::Message::DuplicateApp(Box::new(duplicate))
+                });
+            }
             Message::Done => {
                 let browser = if let Some(browser) = &self.app_browser {
                     browser.clone()
                 } else {
-                    let app_id = self.app_title.replace(' ', "");
-                    let app_id = app_id + &rng().random_range(1000..10000).to_string();
+                    let app_id = format!(
+                        "{}{}",
+                        self.app_title.replace(' ', ""),
+                        rng().random_range(1000..10000)
+                    );
 
                     let mut browser = webapps::browser::Browser::new(&app_id, self.app_persistent);
                     browser.window_title = Some(self.app_title.clone());
                     browser.url = Some(self.app_url.clone());
                     browser.window_size = Some(self.app_window_size.clone());
-                    browser.window_decorations = Some(self.app_window_decorations.clone());
+                    browser.window_decorations = Some(self.app_window_decorations);
                     browser.private_mode = Some(self.app_private_mode);
                     browser.try_simulate_mobile = Some(self.app_simulate_mobile);
                     browser
@@ -188,15 +246,12 @@ impl AppEditor {
                 self.app_window_decorations = decorations;
             }
             Message::WindowWidth(width) => {
-                // Only accept numeric input
-                let filtered: String = width.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-                self.app_window_width = filtered;
+                self.app_window_width = filter_numeric(width);
                 let parsed: f64 = self.app_window_width.parse().unwrap_or(webapps::DEFAULT_WINDOW_WIDTH);
                 self.app_window_size.0 = parsed.clamp(200.0, 8192.0);
             }
             Message::WindowHeight(height) => {
-                let filtered: String = height.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-                self.app_window_height = filtered;
+                self.app_window_height = filter_numeric(height);
                 let parsed: f64 = self.app_window_height.parse().unwrap_or(webapps::DEFAULT_WINDOW_HEIGHT);
                 self.app_window_size.1 = parsed.clamp(200.0, 8192.0);
             }
@@ -234,7 +289,12 @@ impl AppEditor {
                 .on_press(Message::OpenIconPicker)
         };
 
-        widget::container(ico).into()
+        widget::tooltip(
+            widget::container(ico),
+            fl!("icon-selector"),
+            widget::tooltip::Position::Bottom,
+        )
+        .into()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -287,7 +347,21 @@ impl AppEditor {
                         None
                     }
                 )
-                .push(widget::text_input(fl!("url"), &self.app_url).on_input(Message::Url))
+                .push(
+                    widget::row()
+                        .spacing(8)
+                        .push(widget::text_input(fl!("url"), &self.app_url).on_input(Message::Url))
+                        .push(
+                            widget::button::standard(fl!("download-favicon"))
+                                .on_press_maybe(
+                                    if webapps::url_valid(&self.app_url) {
+                                        Some(Message::DownloadFavicon)
+                                    } else {
+                                        None
+                                    }
+                                ),
+                        ),
+                )
                 .push_maybe(
                     if !self.app_url.is_empty() && !webapps::url_valid(&self.app_url) {
                         Some(widget::text::caption(fl!("warning.app-url"))
@@ -349,6 +423,14 @@ impl AppEditor {
                     widget::row()
                         .spacing(8)
                         .push(widget::horizontal_space())
+                        .push_maybe(if !self.is_installed {
+                            None
+                        } else {
+                            Some(
+                                widget::button::standard(fl!("duplicate"))
+                                    .on_press(Message::Duplicate),
+                            )
+                        })
                         .push_maybe(if !self.is_installed {
                             None
                         } else {

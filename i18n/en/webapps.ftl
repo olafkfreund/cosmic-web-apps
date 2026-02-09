@@ -91,6 +91,24 @@ warning=You don't meet requirements
     .app-icon=  - You must select an Icon for your launcher
     .app-browser=  - Please select a browser. Make sure at least one is installed system-wide or via Flatpak
 
+# import/export
+export-apps=Export all apps
+import-apps=Import apps
+toast-export-success=Apps exported successfully
+toast-import-success=Apps imported successfully
+toast-export-error=Failed to export apps
+toast-import-error=Failed to import apps
+duplicate=Duplicate
+
+# file dialogs
+file-dialog-export-title=Export Web Apps
+file-dialog-import-title=Import Web Apps
+file-dialog-open-theme=Open Theme
+file-dialog-save=Save
+file-dialog-import=Import
+file-filter-ron=RON export
+file-filter-ron-theme=Ron Theme
+
 # toast notifications
 toast-app-saved=Web app saved successfully
 toast-app-deleted=Web app deleted
