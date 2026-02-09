@@ -111,6 +111,7 @@ pub struct QuickWebApps {
     downloader_id: usize,
     downloader_output: String,
     search_query: String,
+    cached_apps: Vec<webapps::launcher::WebAppLauncher>,
     themes_list: Vec<Theme>,
     theme_idx: Option<usize>,
     toasts: widget::toaster::Toasts<Message>,
@@ -166,6 +167,7 @@ impl Application for QuickWebApps {
             downloader_id: 1,
             downloader_output: String::new(),
             search_query: String::new(),
+            cached_apps: Vec::new(),
             themes_list,
             theme_idx: Some(0),
             toasts: widget::toaster::Toasts::new(Message::CloseToast),
@@ -335,13 +337,13 @@ impl Application for QuickWebApps {
             }
             Message::SearchApps(query) => {
                 self.search_query = query;
-                return task::message(cosmic::action::app(Message::ReloadNavbarItems));
+                self.rebuild_nav_from_cache();
             }
             Message::ExportApps => {
                 return task::future(async {
                     let response = match SelectedFiles::save_file()
-                        .title("Export Web Apps")
-                        .accept_label("Save")
+                        .title(fl!("file-dialog-export-title"))
+                        .accept_label(fl!("file-dialog-save"))
                         .modal(true)
                         .current_name("webapps-export.ron")
                         .send()
@@ -391,11 +393,11 @@ impl Application for QuickWebApps {
             Message::ImportApps => {
                 return task::future(async {
                     let response = match SelectedFiles::open_file()
-                        .title("Import Web Apps")
-                        .accept_label("Import")
+                        .title(fl!("file-dialog-import-title"))
+                        .accept_label(fl!("file-dialog-import"))
                         .modal(true)
                         .multiple(false)
-                        .filter(FileFilter::new("RON export").glob("*.ron"))
+                        .filter(FileFilter::new(fl!("file-filter-ron")).glob("*.ron"))
                         .send()
                         .await
                     {
@@ -435,33 +437,7 @@ impl Application for QuickWebApps {
 
                     match webapps::launcher::import_all(&path) {
                         Ok(apps) => {
-                            let total = apps.len();
-                            let mut saved = 0usize;
-                            for app in apps {
-                                if let Some(location) = webapps::database_path(
-                                    &format!("{}.ron", app.browser.app_id.as_ref()),
-                                ) {
-                                    let config = ron::ser::PrettyConfig::default();
-                                    match ron::ser::to_string_pretty(&app, config) {
-                                        Ok(content) => {
-                                            if let Err(e) = std::fs::write(&location, content) {
-                                                tracing::error!(
-                                                    "Failed to write imported app '{}': {e}",
-                                                    app.name
-                                                );
-                                            } else {
-                                                saved += 1;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to serialize imported app '{}': {e}",
-                                                app.name
-                                            );
-                                        }
-                                    }
-                                }
-                            }
+                            let (saved, total) = webapps::launcher::save_imported(&apps);
                             let msg = if saved == total {
                                 fl!("toast-import-success")
                             } else {
@@ -533,11 +509,11 @@ impl Application for QuickWebApps {
             Message::ImportThemeFilePicker => {
                 return task::future(async {
                     let response = match SelectedFiles::open_file()
-                        .title("Open Theme")
-                        .accept_label("Open")
+                        .title(fl!("file-dialog-open-theme"))
+                        .accept_label(fl!("open"))
                         .modal(true)
                         .multiple(false)
-                        .filter(FileFilter::new("Ron Theme").glob("*.ron"))
+                        .filter(FileFilter::new(fl!("file-filter-ron-theme")).glob("*.ron"))
                         .send()
                         .await
                     {
@@ -556,11 +532,14 @@ impl Application for QuickWebApps {
                             .collect::<Vec<String>>();
 
                         if !files.is_empty() {
-                            return cosmic::action::app(Message::OpenThemeResult(
-                                urlencoding::decode(&files[0])
-                                    .unwrap_or_default()
-                                    .to_string(),
-                            ));
+                            let decoded = match urlencoding::decode(&files[0]) {
+                                Ok(d) => d.to_string(),
+                                Err(e) => {
+                                    tracing::error!("Failed to decode theme path: {e}");
+                                    return cosmic::action::none();
+                                }
+                            };
+                            return cosmic::action::app(Message::OpenThemeResult(decoded));
                         }
                         cosmic::action::none()
                     } else {
@@ -686,39 +665,13 @@ impl Application for QuickWebApps {
                 }
             }
             Message::ReloadNavbarItems => {
-                self.nav.clear();
-
-                self.nav
-                    .insert()
-                    .icon(widget::icon::from_name("list-add-symbolic"))
-                    .text(fl!("new-app"))
-                    .data::<Page>(Page::Editor(AppEditor::default()))
-                    .activate();
-
-                let query = self.search_query.to_lowercase();
-
-                let mut apps: Vec<_> = webapps::launcher::installed_webapps()
-                    .into_iter()
-                    .filter(|app| {
-                        query.is_empty() || app.name.to_lowercase().contains(&query)
-                    })
-                    .collect();
-
-                apps.sort_by(|a, b| {
+                // Read from disk and cache
+                self.cached_apps = webapps::launcher::installed_webapps();
+                self.cached_apps.sort_by(|a, b| {
                     let cat_cmp = a.category.name().cmp(&b.category.name());
                     cat_cmp.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
                 });
-
-                apps.into_iter().for_each(|app| {
-                        self.nav
-                            .insert()
-                            .icon(widget::icon::from_name(app.icon.clone()))
-                            .text(app.name.clone())
-                            .data::<Page>(Page::Editor(editor::AppEditor::from(app)))
-                            .closable();
-                    });
-
-                self.page = Page::Editor(AppEditor::default());
+                self.rebuild_nav_from_cache();
             }
             Message::ResetSettings => {
                 if let Some(handler) = AppConfig::config_handler() {
@@ -973,6 +926,34 @@ impl Application for QuickWebApps {
 }
 
 impl QuickWebApps {
+    /// Rebuild the nav bar from the in-memory app cache, applying the current search filter.
+    fn rebuild_nav_from_cache(&mut self) {
+        self.nav.clear();
+
+        self.nav
+            .insert()
+            .icon(widget::icon::from_name("list-add-symbolic"))
+            .text(fl!("new-app"))
+            .data::<Page>(Page::Editor(AppEditor::default()))
+            .activate();
+
+        let query = self.search_query.to_lowercase();
+
+        for app in &self.cached_apps {
+            if !query.is_empty() && !app.name.to_lowercase().contains(&query) {
+                continue;
+            }
+            self.nav
+                .insert()
+                .icon(widget::icon::from_name(app.icon.clone()))
+                .text(app.name.clone())
+                .data::<Page>(Page::Editor(editor::AppEditor::from(app.clone())))
+                .closable();
+        }
+
+        self.page = Page::Editor(AppEditor::default());
+    }
+
     fn about(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 

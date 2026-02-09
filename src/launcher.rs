@@ -253,3 +253,31 @@ pub fn import_all(path: &std::path::Path) -> Result<Vec<WebAppLauncher>, Box<dyn
 
     Ok(validated)
 }
+
+/// Save validated imported apps to the database. Returns (saved_count, total_count).
+pub fn save_imported(apps: &[WebAppLauncher]) -> (usize, usize) {
+    let total = apps.len();
+    let mut saved = 0usize;
+
+    for app in apps {
+        if let Some(location) =
+            crate::database_path(&format!("{}.ron", app.browser.app_id.as_ref()))
+        {
+            let config = ron::ser::PrettyConfig::default();
+            match ron::ser::to_string_pretty(app, config) {
+                Ok(content) => {
+                    if let Err(e) = std::fs::write(&location, content) {
+                        tracing::error!("Failed to write imported app '{}': {e}", app.name);
+                    } else {
+                        saved += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to serialize imported app '{}': {e}", app.name);
+                }
+            }
+        }
+    }
+
+    (saved, total)
+}

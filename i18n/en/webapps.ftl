@@ -100,6 +100,15 @@ toast-export-error=Failed to export apps
 toast-import-error=Failed to import apps
 duplicate=Duplicate
 
+# file dialogs
+file-dialog-export-title=Export Web Apps
+file-dialog-import-title=Import Web Apps
+file-dialog-open-theme=Open Theme
+file-dialog-save=Save
+file-dialog-import=Import
+file-filter-ron=RON export
+file-filter-ron-theme=Ron Theme
+
 # toast notifications
 toast-app-saved=Web app saved successfully
 toast-app-deleted=Web app deleted

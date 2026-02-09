@@ -50,6 +50,13 @@
 
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.just ];
 
+          # wget is used at runtime for favicon downloads
+          preFixup = ''
+            gappsWrapperArgs+=(
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wget ]}
+            )
+          '';
+
           installPhase = ''
             runHook preInstall
 

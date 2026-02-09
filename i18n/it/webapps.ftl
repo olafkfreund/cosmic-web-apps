@@ -55,4 +55,29 @@ warning=Non soddisfi i requisiti
     .app-name=  - Il nome dell'app deve contenere più di 3 caratteri
     .app-url=  - È necessario fornire un URL valido che inizi con http:// or https://
     .app-icon=  - Devi selezionare un'icona per il tuo lanciatore
-    .app-browser=  - Seleziona un browser. Assicurati che almeno uno sia installato a livello di sistema o tramite Flatpakhttps://github.com/elevenhsoft/WebApps/new/master/i18n
+    .app-browser=  - Seleziona un browser. Assicurati che almeno uno sia installato a livello di sistema o tramite Flatpak
+
+# import/export
+export-apps=Export all apps
+import-apps=Import apps
+toast-export-success=Apps exported successfully
+toast-import-success=Apps imported successfully
+toast-export-error=Failed to export apps
+toast-import-error=Failed to import apps
+duplicate=Duplicate
+
+# toast notifications
+toast-app-saved=Web app saved successfully
+toast-app-deleted=Web app deleted
+
+# icon picker
+no-icons-found=No icons found. Try a different search term or upload a custom icon.
+
+# file dialogs
+file-dialog-export-title=Export Web Apps
+file-dialog-import-title=Import Web Apps
+file-dialog-open-theme=Open Theme
+file-dialog-save=Save
+file-dialog-import=Import
+file-filter-ron=RON export
+file-filter-ron-theme=Ron Theme

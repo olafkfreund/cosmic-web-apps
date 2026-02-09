@@ -155,8 +155,21 @@ impl AppEditor {
             Message::Duplicate => {
                 let mut duplicate = self.clone();
                 duplicate.app_title = format!("Copy of {}", self.app_title);
+                // Keep browser config but clear app_id so a new one is generated on save
                 duplicate.app_browser = None;
                 duplicate.is_installed = false;
+                // Preserve window settings from the original app
+                if let Some(browser) = &self.app_browser {
+                    duplicate.app_window_decorations = browser.window_decorations.unwrap_or(true);
+                    duplicate.app_private_mode = browser.private_mode.unwrap_or(false);
+                    duplicate.app_simulate_mobile = browser.try_simulate_mobile.unwrap_or(false);
+                    if let Some(ref size) = browser.window_size {
+                        duplicate.app_window_width = size.0.to_string();
+                        duplicate.app_window_height = size.1.to_string();
+                        duplicate.app_window_size = size.clone();
+                    }
+                    duplicate.app_persistent = browser.profile.is_some();
+                }
                 return task::future(async move {
                     crate::pages::Message::DuplicateApp(Box::new(duplicate))
                 });

@@ -89,3 +89,28 @@ warning=You don't meet requirements
     .app-url=  - Vi devas provizi URL komencantan per http:// aŭ https://
     .app-icon=  - Vi devas elekti Piktogramon por via lanĉilo
     .app-browser=  - Bonvolu elekti retumilon. Kontrolu ke almenaŭ unu estas instalita tutsisteme aŭ per Flatpak
+
+# import/export
+export-apps=Export all apps
+import-apps=Import apps
+toast-export-success=Apps exported successfully
+toast-import-success=Apps imported successfully
+toast-export-error=Failed to export apps
+toast-import-error=Failed to import apps
+duplicate=Duplicate
+
+# toast notifications
+toast-app-saved=Web app saved successfully
+toast-app-deleted=Web app deleted
+
+# icon picker
+no-icons-found=No icons found. Try a different search term or upload a custom icon.
+
+# file dialogs
+file-dialog-export-title=Export Web Apps
+file-dialog-import-title=Import Web Apps
+file-dialog-open-theme=Open Theme
+file-dialog-save=Save
+file-dialog-import=Import
+file-filter-ron=RON export
+file-filter-ron-theme=Ron Theme
