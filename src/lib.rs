@@ -123,6 +123,92 @@ fn sanitize_domain_for_filename(domain: &str) -> String {
         .collect()
 }
 
+/// Decode basic HTML entities.
+fn html_decode_basic(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
+}
+
+/// Extract content from a meta tag with given property.
+fn extract_meta_content(html: &str, property: &str) -> Option<String> {
+    // Search for <meta property="og:title" content="...">
+    // or <meta name="description" content="...">
+    let patterns = [
+        format!(r#"property="{property}" content=""#),
+        format!(r#"property='{property}' content='"#),
+        format!(r#"name="{property}" content=""#),
+        format!(r#"content="" property="{property}""#),
+    ];
+
+    for pattern in &patterns {
+        if let Some(pos) = html.find(pattern.as_str()) {
+            // Find the content value
+            let after = &html[pos + pattern.len()..];
+            let quote = if pattern.contains("content=\"") { '"' } else { '\'' };
+            if let Some(end) = after.find(quote) {
+                let content = after[..end].trim().to_string();
+                if !content.is_empty() && content.len() < 256 {
+                    return Some(html_decode_basic(&content));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fetch basic site metadata (title) from a URL.
+/// Returns the page title if found.
+pub async fn fetch_site_title(url_str: &str) -> Option<String> {
+    if !url_valid(url_str) {
+        return None;
+    }
+
+    let response = tokio::process::Command::new("wget")
+        .arg("-q")
+        .arg("-O")
+        .arg("-")
+        .arg("--timeout=10")
+        .arg("--max-redirect=3")
+        .arg(url_str)
+        .output()
+        .await
+        .ok()?;
+
+    if !response.status.success() || response.stdout.is_empty() {
+        return None;
+    }
+
+    // Limit to first 64KB to avoid processing huge pages
+    let html = String::from_utf8_lossy(
+        &response.stdout[..response.stdout.len().min(64 * 1024)]
+    );
+
+    // Try og:title first
+    if let Some(title) = extract_meta_content(&html, "og:title") {
+        return Some(title);
+    }
+
+    // Try <title> tag
+    if let Some(start) = html.find("<title") {
+        if let Some(tag_end) = html[start..].find('>') {
+            let after_tag = start + tag_end + 1;
+            if let Some(end) = html[after_tag..].find("</title>") {
+                let title = html[after_tag..after_tag + end].trim().to_string();
+                if !title.is_empty() && title.len() < 256 {
+                    return Some(html_decode_basic(&title));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Download a favicon for the given URL and save it to the icons directory.
 /// Returns the path to the saved favicon file on success.
 pub async fn download_favicon(url_str: &str) -> Option<String> {
@@ -130,14 +216,15 @@ pub async fn download_favicon(url_str: &str) -> Option<String> {
     let domain = parsed.host_str()?;
 
     // Validate domain contains only safe characters
-    if !domain.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-') {
+    if !domain
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
+    {
         tracing::warn!("Invalid domain characters in favicon URL: {}", domain);
         return None;
     }
 
-    let favicon_url = format!(
-        "https://www.google.com/s2/favicons?domain={domain}&sz=128"
-    );
+    let favicon_url = format!("https://www.google.com/s2/favicons?domain={domain}&sz=128");
 
     let response = tokio::process::Command::new("wget")
         .arg("-q")
@@ -156,7 +243,10 @@ pub async fn download_favicon(url_str: &str) -> Option<String> {
     // Reject excessively large responses (max 2 MB for a favicon)
     const MAX_FAVICON_SIZE: usize = 2 * 1024 * 1024;
     if response.stdout.len() > MAX_FAVICON_SIZE {
-        tracing::warn!("Favicon response too large: {} bytes", response.stdout.len());
+        tracing::warn!(
+            "Favicon response too large: {} bytes",
+            response.stdout.len()
+        );
         return None;
     }
 
@@ -174,7 +264,9 @@ pub async fn download_favicon(url_str: &str) -> Option<String> {
 
     let safe_domain = sanitize_domain_for_filename(domain);
     let favicon_path = icons_dir.join(format!("favicon-{safe_domain}.png"));
-    tokio::fs::write(&favicon_path, &response.stdout).await.ok()?;
+    tokio::fs::write(&favicon_path, &response.stdout)
+        .await
+        .ok()?;
 
     Some(favicon_path.to_string_lossy().to_string())
 }
@@ -190,8 +282,13 @@ pub fn icons_location() -> Option<PathBuf> {
 /// This performs synchronous file I/O. If called from an async context,
 /// wrap in `tokio::task::spawn_blocking`.
 pub fn move_icon(path: &str, icon_name: &str, extension: &str) -> Option<PathBuf> {
-    if icon_name.contains('/') || icon_name.contains('\\') || icon_name.contains("..") ||
-       extension.contains('/') || extension.contains('\\') || extension.contains("..") {
+    if icon_name.contains('/')
+        || icon_name.contains('\\')
+        || icon_name.contains("..")
+        || extension.contains('/')
+        || extension.contains('\\')
+        || extension.contains("..")
+    {
         tracing::warn!("Invalid icon name or extension: {icon_name}.{extension}");
         return None;
     }
@@ -231,7 +328,8 @@ pub fn icon_pack_installed() -> bool {
     packs.iter().any(|theme| icons_dir.join(theme).exists())
 }
 
-pub async fn add_icon_packs_install_script() -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn add_icon_packs_install_script()
+-> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let install_script = include_bytes!("../resources/scripts/icon-installer.sh");
     let temp_file = format!("/tmp/{}.sh", APP_ID);
 
@@ -337,7 +435,9 @@ pub async fn image_handle(path: String) -> Option<Icon> {
                 }
 
                 // Validate image dimensions in the blocking thread
-                let image_reader = ImageReader::new(Cursor::new(&data)).with_guessed_format().ok()?;
+                let image_reader = ImageReader::new(Cursor::new(&data))
+                    .with_guessed_format()
+                    .ok()?;
                 let image = image_reader.decode().ok()?;
                 if image.width() >= ICON_SIZE && image.height() >= ICON_SIZE {
                     Some(data)
@@ -491,11 +591,15 @@ impl Default for WindowSize {
     }
 }
 
-#[derive(Parser, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Parser, Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 pub struct WebviewArgs {
+    #[arg(default_value = "")]
     pub id: String,
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    pub private: bool,
 }
 
 impl AsRef<str> for WebviewArgs {
@@ -509,7 +613,11 @@ impl IntoIterator for WebviewArgs {
     type IntoIter = std::vec::IntoIter<String>;
 
     fn into_iter(self) -> Self::IntoIter {
-        vec![self.id].into_iter()
+        let mut args = vec![self.id];
+        if self.private {
+            args.push("--private".to_string());
+        }
+        args.into_iter()
     }
 }
 

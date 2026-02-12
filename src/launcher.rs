@@ -1,6 +1,6 @@
 use ashpd::desktop::{
-    dynamic_launcher::{DynamicLauncherProxy, PrepareInstallOptions},
     Icon,
+    dynamic_launcher::{DynamicLauncherProxy, PrepareInstallOptions},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -60,7 +60,11 @@ pub fn installed_webapps() -> Vec<WebAppLauncher> {
                     };
 
                     if metadata.len() > MAX_RON_FILE_SIZE {
-                        tracing::warn!("Skipping oversized file {:?} ({} bytes)", entry.path(), metadata.len());
+                        tracing::warn!(
+                            "Skipping oversized file {:?} ({} bytes)",
+                            entry.path(),
+                            metadata.len()
+                        );
                         continue;
                     }
 
@@ -107,10 +111,21 @@ impl WebAppLauncher {
         desktop_entry.push_str(&format!("Exec={safe_exec}\n"));
         desktop_entry.push_str(&format!("StartupWMClass={safe_wm_class}\n"));
         desktop_entry.push_str(&format!("Categories={}\n", self.category.as_ref()));
-        desktop_entry.push_str("Actions=new-window;\n");
+        desktop_entry.push_str("Actions=new-window;new-private-window;open-in-browser;\n");
         desktop_entry.push_str("\n[Desktop Action new-window]\n");
         desktop_entry.push_str("Name=New Window\n");
         desktop_entry.push_str(&format!("Exec={safe_exec}\n"));
+        desktop_entry.push_str("\n[Desktop Action new-private-window]\n");
+        desktop_entry.push_str("Name=New Private Window\n");
+        desktop_entry.push_str(&format!("Exec={safe_exec} --private\n"));
+        desktop_entry.push_str("\n[Desktop Action open-in-browser]\n");
+        desktop_entry.push_str("Name=Open in Browser\n");
+        if let Some(ref url) = self.browser.url {
+            let safe_url = sanitize_desktop_field(url);
+            desktop_entry.push_str(&format!("Exec=xdg-open {safe_url}\n"));
+        } else {
+            desktop_entry.push_str("Exec=xdg-open about:blank\n");
+        }
 
         let proxy = DynamicLauncherProxy::new().await?;
 
@@ -176,7 +191,10 @@ fn validate_imported_app(mut app: WebAppLauncher) -> Option<WebAppLauncher> {
         tracing::warn!("Rejecting imported app with empty app_id after sanitization");
         return None;
     }
-    app.browser.app_id = crate::WebviewArgs { id: safe_id };
+    app.browser.app_id = crate::WebviewArgs {
+        id: safe_id,
+        private: false,
+    };
 
     // Validate URL is http/https
     if let Some(ref url) = app.browser.url {
@@ -198,7 +216,10 @@ fn validate_imported_app(mut app: WebAppLauncher) -> Option<WebAppLauncher> {
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
     if icon_has_traversal {
-        tracing::warn!("Rejecting imported app '{}': icon path contains '..'", app.name);
+        tracing::warn!(
+            "Rejecting imported app '{}': icon path contains '..'",
+            app.name
+        );
         return None;
     }
 
@@ -241,14 +262,17 @@ fn validate_imported_app(mut app: WebAppLauncher) -> Option<WebAppLauncher> {
 }
 
 /// Import web apps from a RON file. Returns validated apps ready for saving.
-pub fn import_all(path: &std::path::Path) -> Result<Vec<WebAppLauncher>, Box<dyn std::error::Error>> {
+pub fn import_all(
+    path: &std::path::Path,
+) -> Result<Vec<WebAppLauncher>, Box<dyn std::error::Error>> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_IMPORT_FILE_SIZE {
         return Err(format!(
             "Import file too large: {} bytes (max {} bytes)",
             metadata.len(),
             MAX_IMPORT_FILE_SIZE
-        ).into());
+        )
+        .into());
     }
     let content = std::fs::read_to_string(path)?;
     let apps: Vec<WebAppLauncher> = ron::from_str(&content)?;
@@ -258,14 +282,13 @@ pub fn import_all(path: &std::path::Path) -> Result<Vec<WebAppLauncher>, Box<dyn
             "Import contains too many apps: {} (max {})",
             apps.len(),
             MAX_IMPORT_APPS
-        ).into());
+        )
+        .into());
     }
 
     // Validate and sanitize each imported app
-    let validated: Vec<WebAppLauncher> = apps
-        .into_iter()
-        .filter_map(validate_imported_app)
-        .collect();
+    let validated: Vec<WebAppLauncher> =
+        apps.into_iter().filter_map(validate_imported_app).collect();
 
     Ok(validated)
 }

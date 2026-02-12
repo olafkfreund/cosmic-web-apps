@@ -56,6 +56,7 @@ pub struct Browser {
     pub custom_js: Option<String>,
     pub user_agent: Option<UserAgent>,
     pub permissions: Option<PermissionPolicy>,
+    pub url_schemes: Option<Vec<String>>,
 }
 
 impl Browser {
@@ -64,6 +65,7 @@ impl Browser {
         let mut browser = Self {
             app_id: crate::WebviewArgs {
                 id: safe_id.clone(),
+                private: false,
             },
             window_title: None,
             url: None,
@@ -76,6 +78,7 @@ impl Browser {
             custom_js: None,
             user_agent: None,
             permissions: None,
+            url_schemes: None,
         };
 
         if with_profile {

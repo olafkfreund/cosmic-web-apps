@@ -4,13 +4,14 @@ mod iconpicker;
 use crate::{config::AppConfig, pages::iconpicker::IconPicker, themes::Theme};
 use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
 use cosmic::{
-    app::{context_drawer, Core, Task},
+    Application, Element,
+    app::{Core, Task, context_drawer},
     command::set_theme,
     cosmic_theme,
     iced::{
-        alignment::Horizontal,
-        futures::{future, SinkExt as _},
         Alignment, Length, Subscription,
+        alignment::Horizontal,
+        futures::{SinkExt as _, future},
     },
     surface, task, theme,
     widget::{
@@ -18,7 +19,6 @@ use cosmic::{
         menu::{self, ItemHeight, ItemWidth},
         nav_bar, responsive_menu_bar,
     },
-    Application, Element,
 };
 use editor::AppEditor;
 use ron::ser::to_string_pretty;
@@ -36,7 +36,7 @@ use tokio::{
     process::Command,
     sync::oneshot,
 };
-use webapps::{fl, APP_ICON, APP_ID, REPOSITORY};
+use webapps::{APP_ICON, APP_ID, REPOSITORY, fl};
 
 static MENU_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("responsive-menu"));
@@ -224,7 +224,9 @@ impl Application for QuickWebApps {
 
                     tokio::spawn(async move {
                         match child.wait().await {
-                            Ok(status) => { let _ = tx.send(status); }
+                            Ok(status) => {
+                                let _ = tx.send(status);
+                            }
                             Err(e) => tracing::error!("Child process error: {e}"),
                         }
                     });
@@ -306,7 +308,11 @@ impl Application for QuickWebApps {
                 self.nav.remove(id);
                 self.dialogs = None;
                 self.page = Page::Editor(AppEditor::default());
-                tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-app-deleted"))).map(cosmic::Action::App));
+                tasks.push(
+                    self.toasts
+                        .push(widget::toaster::Toast::new(fl!("toast-app-deleted")))
+                        .map(cosmic::Action::App),
+                );
             }
             Message::DuplicateApp(editor) => {
                 self.page = Page::Editor(*editor);
@@ -331,7 +337,8 @@ impl Application for QuickWebApps {
                 if self.downloader_output.len() > MAX_OUTPUT_LEN {
                     let trim_at = self.downloader_output.len() - MAX_OUTPUT_LEN;
                     if let Some(newline) = self.downloader_output[trim_at..].find('\n') {
-                        self.downloader_output = self.downloader_output[trim_at + newline + 1..].to_string();
+                        self.downloader_output =
+                            self.downloader_output[trim_at + newline + 1..].to_string();
                     }
                 }
             }
@@ -354,9 +361,9 @@ impl Application for QuickWebApps {
                         Ok(r) => r.response(),
                         Err(e) => {
                             tracing::error!("Failed to open save dialog: {e}");
-                            return cosmic::action::app(Message::ExportAppsResult(
-                                Err(fl!("toast-export-error")),
-                            ));
+                            return cosmic::action::app(Message::ExportAppsResult(Err(fl!(
+                                "toast-export-error"
+                            ))));
                         }
                     };
 
@@ -370,9 +377,9 @@ impl Application for QuickWebApps {
                                 }
                                 Err(e) => {
                                     tracing::error!("Export failed: {e}");
-                                    return cosmic::action::app(Message::ExportAppsResult(
-                                        Err(fl!("toast-export-error")),
-                                    ));
+                                    return cosmic::action::app(Message::ExportAppsResult(Err(
+                                        fl!("toast-export-error"),
+                                    )));
                                 }
                             }
                         }
@@ -380,18 +387,22 @@ impl Application for QuickWebApps {
                     cosmic::action::none()
                 });
             }
-            Message::ExportAppsResult(result) => {
-                match result {
-                    Ok(()) => {
-                        tasks.push(self.toasts.push(
-                            widget::toaster::Toast::new(fl!("toast-export-success")),
-                        ).map(cosmic::Action::App));
-                    }
-                    Err(msg) => {
-                        tasks.push(self.toasts.push(widget::toaster::Toast::new(msg)).map(cosmic::Action::App));
-                    }
+            Message::ExportAppsResult(result) => match result {
+                Ok(()) => {
+                    tasks.push(
+                        self.toasts
+                            .push(widget::toaster::Toast::new(fl!("toast-export-success")))
+                            .map(cosmic::Action::App),
+                    );
                 }
-            }
+                Err(msg) => {
+                    tasks.push(
+                        self.toasts
+                            .push(widget::toaster::Toast::new(msg))
+                            .map(cosmic::Action::App),
+                    );
+                }
+            },
             Message::ImportApps => {
                 return task::future(async {
                     let title = fl!("file-dialog-import-title");
@@ -432,9 +443,11 @@ impl Application for QuickWebApps {
                         Ok(d) => d.to_string(),
                         Err(e) => {
                             tracing::error!("Failed to decode import file path: {e}");
-                            tasks.push(self.toasts.push(
-                                widget::toaster::Toast::new(fl!("toast-import-error")),
-                            ).map(cosmic::Action::App));
+                            tasks.push(
+                                self.toasts
+                                    .push(widget::toaster::Toast::new(fl!("toast-import-error")))
+                                    .map(cosmic::Action::App),
+                            );
                             return Task::batch(tasks);
                         }
                     };
@@ -446,29 +459,24 @@ impl Application for QuickWebApps {
                             let msg = if saved == total {
                                 fl!("toast-import-success")
                             } else {
-                                format!(
-                                    "{} ({}/{})",
-                                    fl!("toast-import-success"),
-                                    saved,
-                                    total
-                                )
+                                format!("{} ({}/{})", fl!("toast-import-success"), saved, total)
                             };
-                            tasks.push(self.toasts.push(
-                                widget::toaster::Toast::new(msg),
-                            ).map(cosmic::Action::App));
-                            return Task::batch(
-                                tasks
-                                    .into_iter()
-                                    .chain(std::iter::once(task::message(
-                                        cosmic::action::app(Message::ReloadNavbarItems),
-                                    ))),
+                            tasks.push(
+                                self.toasts
+                                    .push(widget::toaster::Toast::new(msg))
+                                    .map(cosmic::Action::App),
                             );
+                            return Task::batch(tasks.into_iter().chain(std::iter::once(
+                                task::message(cosmic::action::app(Message::ReloadNavbarItems)),
+                            )));
                         }
                         Err(e) => {
                             tracing::error!("Import failed: {e}");
-                            tasks.push(self.toasts.push(
-                                widget::toaster::Toast::new(fl!("toast-import-error")),
-                            ).map(cosmic::Action::App));
+                            tasks.push(
+                                self.toasts
+                                    .push(widget::toaster::Toast::new(fl!("toast-import-error")))
+                                    .map(cosmic::Action::App),
+                            );
                         }
                     }
                 }
@@ -549,7 +557,7 @@ impl Application for QuickWebApps {
                     } else {
                         cosmic::action::none()
                     }
-                })
+                });
             }
             Message::Launch(args) => {
                 return Task::perform(
@@ -587,7 +595,9 @@ impl Application for QuickWebApps {
                     for path in files {
                         let Ok(dir_entry) = path else { continue };
                         let file_name = dir_entry.file_name();
-                        let Some(name_str) = file_name.to_str() else { continue };
+                        let Some(name_str) = file_name.to_str() else {
+                            continue;
+                        };
                         let theme_name = name_str.replace(".ron", "");
                         let metadata = std::fs::metadata(dir_entry.path());
 
@@ -629,10 +639,7 @@ impl Application for QuickWebApps {
 
                     if let Some(file_stem) = icon_name {
                         let stem_str = file_stem.to_str().unwrap_or("icon");
-                        let ext_str = buf
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("png");
+                        let ext_str = buf.extension().and_then(|e| e.to_str()).unwrap_or("png");
                         if let Some(final_path) = webapps::move_icon(&path, stem_str, ext_str) {
                             moved.push(final_path.display().to_string());
                         }
@@ -689,7 +696,8 @@ impl Application for QuickWebApps {
                     webapps::database_path(&format!("{}.ron", launcher.browser.app_id.as_ref()))
                 {
                     let save_result = (|| -> Result<(), Box<dyn std::error::Error>> {
-                        let content = to_string_pretty(&launcher, ron::ser::PrettyConfig::default())?;
+                        let content =
+                            to_string_pretty(&launcher, ron::ser::PrettyConfig::default())?;
                         let mut f = std::fs::File::create(&location)?;
                         f.write_all(content.as_bytes())?;
                         Ok(())
@@ -697,11 +705,19 @@ impl Application for QuickWebApps {
 
                     match save_result {
                         Ok(()) => {
-                            tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-app-saved"))).map(cosmic::Action::App));
+                            tasks.push(
+                                self.toasts
+                                    .push(widget::toaster::Toast::new(fl!("toast-app-saved")))
+                                    .map(cosmic::Action::App),
+                            );
                         }
                         Err(e) => {
                             tracing::error!("Failed to save web app: {e}");
-                            tasks.push(self.toasts.push(widget::toaster::Toast::new(fl!("toast-save-error"))).map(cosmic::Action::App));
+                            tasks.push(
+                                self.toasts
+                                    .push(widget::toaster::Toast::new(fl!("toast-save-error")))
+                                    .map(cosmic::Action::App),
+                            );
                             return Task::batch(tasks);
                         }
                     }
@@ -769,30 +785,36 @@ impl Application for QuickWebApps {
             }
             Message::ClearAppData(app_id) => {
                 return task::future(async move {
-                    match tokio::task::spawn_blocking(move || {
-                        webapps::clear_profile_data(&app_id)
-                    }).await {
+                    match tokio::task::spawn_blocking(move || webapps::clear_profile_data(&app_id))
+                        .await
+                    {
                         Ok(Ok(())) => cosmic::action::app(Message::ClearAppDataDone(Ok(()))),
-                        Ok(Err(e)) => cosmic::action::app(Message::ClearAppDataDone(Err(e.to_string()))),
-                        Err(e) => cosmic::action::app(Message::ClearAppDataDone(Err(e.to_string()))),
+                        Ok(Err(e)) => {
+                            cosmic::action::app(Message::ClearAppDataDone(Err(e.to_string())))
+                        }
+                        Err(e) => {
+                            cosmic::action::app(Message::ClearAppDataDone(Err(e.to_string())))
+                        }
                     }
                 });
             }
-            Message::ClearAppDataDone(result) => {
-                match result {
-                    Ok(()) => {
-                        tasks.push(self.toasts.push(
-                            widget::toaster::Toast::new(fl!("toast-data-cleared")),
-                        ).map(cosmic::Action::App));
-                    }
-                    Err(msg) => {
-                        tracing::error!("Failed to clear app data: {msg}");
-                        tasks.push(self.toasts.push(
-                            widget::toaster::Toast::new(fl!("toast-data-clear-error")),
-                        ).map(cosmic::Action::App));
-                    }
+            Message::ClearAppDataDone(result) => match result {
+                Ok(()) => {
+                    tasks.push(
+                        self.toasts
+                            .push(widget::toaster::Toast::new(fl!("toast-data-cleared")))
+                            .map(cosmic::Action::App),
+                    );
                 }
-            }
+                Err(msg) => {
+                    tracing::error!("Failed to clear app data: {msg}");
+                    tasks.push(
+                        self.toasts
+                            .push(widget::toaster::Toast::new(fl!("toast-data-clear-error")))
+                            .map(cosmic::Action::App),
+                    );
+                }
+            },
             Message::None => (),
         };
 
@@ -810,20 +832,18 @@ impl Application for QuickWebApps {
                     &self.key_binds,
                     MENU_ID.clone(),
                     Message::Surface,
-                    vec![
-                        (
-                            fl!("app"),
-                            vec![
-                                menu::Item::Button(fl!("new-app"), None, MenuAction::NewApp),
-                                menu::Item::Divider,
-                                menu::Item::Button(fl!("export-apps"), None, MenuAction::ExportApps),
-                                menu::Item::Button(fl!("import-apps"), None, MenuAction::ImportApps),
-                                menu::Item::Divider,
-                                menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
-                                menu::Item::Button(fl!("about"), None, MenuAction::About),
-                            ],
-                        ),
-                    ],
+                    vec![(
+                        fl!("app"),
+                        vec![
+                            menu::Item::Button(fl!("new-app"), None, MenuAction::NewApp),
+                            menu::Item::Divider,
+                            menu::Item::Button(fl!("export-apps"), None, MenuAction::ExportApps),
+                            menu::Item::Button(fl!("import-apps"), None, MenuAction::ImportApps),
+                            menu::Item::Divider,
+                            menu::Item::Button(fl!("settings"), None, MenuAction::Settings),
+                            menu::Item::Button(fl!("about"), None, MenuAction::About),
+                        ],
+                    )],
                 ),
             widget::text_input(fl!("search"), &self.search_query)
                 .on_input(Message::SearchApps)

@@ -1,11 +1,11 @@
 use cosmic::{
+    Element, Task,
     action::Action,
-    iced::{alignment::Vertical, Length},
+    iced::{Length, alignment::Vertical},
     style, task,
     widget::{self},
-    Element, Task,
 };
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use strum::IntoEnumIterator as _;
 use webapps::fl;
 
@@ -13,7 +13,10 @@ use crate::pages;
 
 /// Filter a string to only contain digits and dots (for numeric input fields).
 fn filter_numeric(input: String) -> String {
-    input.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()
+    input
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +46,7 @@ pub struct AppEditor {
     pub app_allow_microphone: bool,
     pub app_allow_geolocation: bool,
     pub app_allow_notifications: bool,
+    pub app_url_schemes: String,
 }
 
 impl Default for AppEditor {
@@ -72,11 +76,16 @@ impl Default for AppEditor {
             is_installed: false,
             app_user_agent: 0,
             app_custom_ua: String::new(),
-            user_agent_options: vec![fl!("user-agent-default"), fl!("user-agent-mobile"), fl!("user-agent-custom")],
+            user_agent_options: vec![
+                fl!("user-agent-default"),
+                fl!("user-agent-mobile"),
+                fl!("user-agent-custom"),
+            ],
             app_allow_camera: false,
             app_allow_microphone: false,
             app_allow_geolocation: false,
             app_allow_notifications: false,
+            app_url_schemes: String::new(),
         }
     }
 }
@@ -107,6 +116,8 @@ pub enum Message {
     AllowGeolocation(bool),
     AllowNotifications(bool),
     ClearAppData,
+    UrlSchemes(String),
+    SiteTitleResult(Option<String>),
 }
 
 impl AppEditor {
@@ -154,6 +165,11 @@ impl AppEditor {
         editor.app_allow_geolocation = perms.allow_geolocation;
         editor.app_allow_notifications = perms.allow_notifications;
 
+        editor.app_url_schemes = launcher.browser.url_schemes
+            .as_ref()
+            .map(|schemes| schemes.join(", "))
+            .unwrap_or_default();
+
         editor
     }
 
@@ -178,7 +194,8 @@ impl AppEditor {
             Message::DownloadFavicon => {
                 let url = self.app_url.clone();
                 if webapps::url_valid(&url) {
-                    return Task::perform(
+                    let url2 = url.clone();
+                    let favicon_task = Task::perform(
                         async move { webapps::download_favicon(&url).await },
                         |result| {
                             cosmic::Action::App(crate::pages::Message::Editor(
@@ -186,6 +203,19 @@ impl AppEditor {
                             ))
                         },
                     );
+                    // Also fetch site title if title field is empty
+                    if self.app_title.is_empty() {
+                        let title_task = Task::perform(
+                            async move { webapps::fetch_site_title(&url2).await },
+                            |result| {
+                                cosmic::Action::App(crate::pages::Message::Editor(
+                                    Message::SiteTitleResult(result),
+                                ))
+                            },
+                        );
+                        return Task::batch([favicon_task, title_task]);
+                    }
+                    return favicon_task;
                 }
             }
             Message::FaviconResult(result) => {
@@ -229,6 +259,10 @@ impl AppEditor {
                     duplicate.app_allow_microphone = perms.allow_microphone;
                     duplicate.app_allow_geolocation = perms.allow_geolocation;
                     duplicate.app_allow_notifications = perms.allow_notifications;
+                    duplicate.app_url_schemes = browser.url_schemes
+                        .as_ref()
+                        .map(|schemes| schemes.join(", "))
+                        .unwrap_or_default();
                 }
                 return task::future(async move {
                     crate::pages::Message::DuplicateApp(Box::new(duplicate))
@@ -268,6 +302,15 @@ impl AppEditor {
                         allow_geolocation: self.app_allow_geolocation,
                         allow_notifications: self.app_allow_notifications,
                     });
+                    // Parse URL schemes
+                    let schemes: Vec<String> = self.app_url_schemes
+                        .split(',')
+                        .map(|s| s.trim().to_lowercase())
+                        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '+' || c == '.'))
+                        .collect();
+                    if !schemes.is_empty() {
+                        browser.url_schemes = Some(schemes);
+                    }
                     browser
                 };
 
@@ -306,7 +349,7 @@ impl AppEditor {
                 }
             }
             Message::OpenIconPicker => {
-                return task::future(async { pages::Message::OpenIconPicker })
+                return task::future(async { pages::Message::OpenIconPicker });
             }
             Message::Title(title) => {
                 self.app_title = title;
@@ -319,12 +362,18 @@ impl AppEditor {
             }
             Message::WindowWidth(width) => {
                 self.app_window_width = filter_numeric(width);
-                let parsed: f64 = self.app_window_width.parse().unwrap_or(webapps::DEFAULT_WINDOW_WIDTH);
+                let parsed: f64 = self
+                    .app_window_width
+                    .parse()
+                    .unwrap_or(webapps::DEFAULT_WINDOW_WIDTH);
                 self.app_window_size.0 = parsed.clamp(200.0, 8192.0);
             }
             Message::WindowHeight(height) => {
                 self.app_window_height = filter_numeric(height);
-                let parsed: f64 = self.app_window_height.parse().unwrap_or(webapps::DEFAULT_WINDOW_HEIGHT);
+                let parsed: f64 = self
+                    .app_window_height
+                    .parse()
+                    .unwrap_or(webapps::DEFAULT_WINDOW_HEIGHT);
                 self.app_window_size.1 = parsed.clamp(200.0, 8192.0);
             }
             Message::UserAgentSelect(idx) => {
@@ -348,9 +397,20 @@ impl AppEditor {
             Message::ClearAppData => {
                 if let Some(browser) = &self.app_browser {
                     let app_id = browser.app_id.as_ref().to_string();
-                    return task::future(async move {
-                        crate::pages::Message::ClearAppData(app_id)
-                    });
+                    return task::future(
+                        async move { crate::pages::Message::ClearAppData(app_id) },
+                    );
+                }
+            }
+            Message::UrlSchemes(schemes) => {
+                self.app_url_schemes = schemes;
+            }
+            Message::SiteTitleResult(result) => {
+                // Only auto-fill if the title is still empty (user hasn't typed anything)
+                if let Some(title) = result {
+                    if self.app_title.is_empty() {
+                        self.app_title = title;
+                    }
                 }
             }
         }
@@ -437,36 +497,34 @@ impl AppEditor {
                     .class(style::Container::Card),
                 )
                 .push(widget::text_input(fl!("title"), &self.app_title).on_input(Message::Title))
-                .push_maybe(
-                    if !self.app_title.is_empty() && self.app_title.len() < 3 {
-                        Some(widget::text::caption(fl!("warning-app-name"))
-                            .class(style::Text::Accent))
-                    } else {
-                        None
-                    }
-                )
+                .push_maybe(if !self.app_title.is_empty() && self.app_title.len() < 3 {
+                    Some(widget::text::caption(fl!("warning-app-name")).class(style::Text::Accent))
+                } else {
+                    None
+                })
                 .push(
                     widget::row()
                         .spacing(8)
                         .push(widget::text_input(fl!("url"), &self.app_url).on_input(Message::Url))
                         .push(
-                            widget::button::standard(fl!("download-favicon"))
-                                .on_press_maybe(
-                                    if webapps::url_valid(&self.app_url) {
-                                        Some(Message::DownloadFavicon)
-                                    } else {
-                                        None
-                                    }
-                                ),
+                            widget::button::standard(fl!("download-favicon")).on_press_maybe(
+                                if webapps::url_valid(&self.app_url) {
+                                    Some(Message::DownloadFavicon)
+                                } else {
+                                    None
+                                },
+                            ),
                         ),
                 )
                 .push_maybe(
                     if !self.app_url.is_empty() && !webapps::url_valid(&self.app_url) {
-                        Some(widget::text::caption(fl!("warning-app-url"))
-                            .class(style::Text::Accent))
+                        Some(
+                            widget::text::caption(fl!("warning-app-url"))
+                                .class(style::Text::Accent),
+                        )
                     } else {
                         None
-                    }
+                    },
                 )
                 .push({
                     let mut settings = widget::settings::section()
@@ -528,8 +586,11 @@ impl AppEditor {
                     if self.app_user_agent == 2 {
                         settings = settings.add(widget::settings::item(
                             fl!("user-agent-custom-label"),
-                            widget::text_input(fl!("user-agent-custom-placeholder"), &self.app_custom_ua)
-                                .on_input(Message::CustomUserAgent),
+                            widget::text_input(
+                                fl!("user-agent-custom-placeholder"),
+                                &self.app_custom_ua,
+                            )
+                            .on_input(Message::CustomUserAgent),
                         ));
                     }
 
@@ -540,15 +601,18 @@ impl AppEditor {
                         ))
                         .add(widget::settings::item(
                             fl!("permission-microphone"),
-                            widget::toggler(self.app_allow_microphone).on_toggle(Message::AllowMicrophone),
+                            widget::toggler(self.app_allow_microphone)
+                                .on_toggle(Message::AllowMicrophone),
                         ))
                         .add(widget::settings::item(
                             fl!("permission-geolocation"),
-                            widget::toggler(self.app_allow_geolocation).on_toggle(Message::AllowGeolocation),
+                            widget::toggler(self.app_allow_geolocation)
+                                .on_toggle(Message::AllowGeolocation),
                         ))
                         .add(widget::settings::item(
                             fl!("permission-notifications"),
-                            widget::toggler(self.app_allow_notifications).on_toggle(Message::AllowNotifications),
+                            widget::toggler(self.app_allow_notifications)
+                                .on_toggle(Message::AllowNotifications),
                         ))
                         .add(widget::settings::item(
                             fl!("custom-css"),
@@ -560,13 +624,24 @@ impl AppEditor {
                             widget::column()
                                 .spacing(4)
                                 .push(
-                                    widget::text_input(fl!("custom-js-placeholder"), &self.app_custom_js)
-                                        .on_input(Message::CustomJs),
+                                    widget::text_input(
+                                        fl!("custom-js-placeholder"),
+                                        &self.app_custom_js,
+                                    )
+                                    .on_input(Message::CustomJs),
                                 )
                                 .push(
                                     widget::text::caption(fl!("custom-js-warning"))
-                                        .class(style::Text::Accent)
+                                        .class(style::Text::Accent),
                                 ),
+                        ))
+                        .add(widget::settings::item(
+                            fl!("url-schemes"),
+                            widget::text_input(
+                                fl!("url-schemes-placeholder"),
+                                &self.app_url_schemes,
+                            )
+                            .on_input(Message::UrlSchemes),
                         ));
 
                     settings

@@ -7,8 +7,8 @@ use tao::{
 };
 use url::Url;
 use wry::{
-    dpi::{LogicalSize, Size},
     WebContext, WebViewBuilder,
+    dpi::{LogicalSize, Size},
 };
 
 fn is_url_safe(url_str: &str) -> bool {
@@ -29,13 +29,18 @@ fn main() -> wry::Result<()> {
     gtk::glib::set_program_name(args.id.clone().into());
     gtk::glib::set_application_name(&args.id);
 
-    let browser = match webapps::browser::Browser::from_appid(&args.id) {
+    let mut browser = match webapps::browser::Browser::from_appid(&args.id) {
         Some(b) => b,
         None => {
             eprintln!("Failed to load web app configuration for '{}'", args.id);
             std::process::exit(1);
         }
     };
+
+    // Override private mode if --private CLI flag was passed
+    if args.private {
+        browser.private_mode = Some(true);
+    }
 
     // Validate URL scheme before loading
     let url = browser.url.unwrap_or_default();
@@ -47,7 +52,10 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
 
     // Clone title before window builder consumes it (needed for notification forwarding)
-    let app_title_for_notifications = browser.window_title.clone().unwrap_or_else(|| "Web App".to_string());
+    let app_title_for_notifications = browser
+        .window_title
+        .clone()
+        .unwrap_or_else(|| "Web App".to_string());
 
     let mut attrs = WindowAttributes::default();
     if let Some(size) = browser.window_size {
@@ -68,6 +76,10 @@ fn main() -> wry::Result<()> {
             std::process::exit(1);
         }
     };
+
+    // Issue #46: WM_CLASS is set via gtk::glib::set_program_name() above (line 29),
+    // which GTK uses as the WM_CLASS res_name on X11. This matches StartupWMClass
+    // in the generated .desktop entry.
 
     let mut context = WebContext::new(browser.profile);
 
@@ -133,7 +145,11 @@ fn main() -> wry::Result<()> {
     if !perms.allow_camera || !perms.allow_microphone {
         // Override getUserMedia to block camera/mic
         let block_video = if !perms.allow_camera { "true" } else { "false" };
-        let block_audio = if !perms.allow_microphone { "true" } else { "false" };
+        let block_audio = if !perms.allow_microphone {
+            "true"
+        } else {
+            "false"
+        };
         permission_overrides.push(format!(
             r#"(function(){{
                 var origGetUserMedia = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
@@ -198,16 +214,92 @@ fn main() -> wry::Result<()> {
                     static get permission() { return 'granted'; }
                     static requestPermission() { return Promise.resolve('granted'); }
                 };
-            })()"#
+            })()"#,
         );
+    }
 
-        let app_title = app_title_for_notifications.clone();
-        builder = builder.with_ipc_handler(move |req| {
-            let msg = req.body();
-            // Parse JSON to forward notifications
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(msg) {
-                if parsed.get("type").and_then(|t| t.as_str()) == Some("notification") {
-                    let title = parsed.get("title").and_then(|t| t.as_str()).unwrap_or("Notification");
+    // Issue #43: Media session integration (always inject)
+    builder = builder.with_initialization_script(
+        r#"(function(){
+            // Auto-wire media session to first video/audio element
+            function wireMediaSession() {
+                var media = document.querySelector('video, audio');
+                if (!media) return;
+
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.setActionHandler('play', function() { media.play(); });
+                    navigator.mediaSession.setActionHandler('pause', function() { media.pause(); });
+                    navigator.mediaSession.setActionHandler('seekbackward', function() { media.currentTime = Math.max(0, media.currentTime - 10); });
+                    navigator.mediaSession.setActionHandler('seekforward', function() { media.currentTime += 10; });
+
+                    // Report media state changes via IPC
+                    media.addEventListener('play', function() {
+                        window.ipc.postMessage(JSON.stringify({type:'media', state:'playing'}));
+                    });
+                    media.addEventListener('pause', function() {
+                        window.ipc.postMessage(JSON.stringify({type:'media', state:'paused'}));
+                    });
+                }
+            }
+
+            // Wire up on load and on DOM changes
+            wireMediaSession();
+            var observer = new MutationObserver(function() { wireMediaSession(); });
+            observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+        })()"#,
+    );
+
+    // Issue #44: Badge count detection (always inject)
+    builder = builder.with_initialization_script(
+        r#"(function(){
+            var lastBadge = 0;
+            function checkBadge() {
+                var match = document.title.match(/[\(\[](\d+)[\)\]]/);
+                var count = match ? parseInt(match[1]) : 0;
+                if (count !== lastBadge) {
+                    lastBadge = count;
+                    window.ipc.postMessage(JSON.stringify({type:'badge', count: count}));
+                }
+            }
+
+            // Also intercept Badging API if available
+            if (navigator.setAppBadge) {
+                var origSetBadge = navigator.setAppBadge.bind(navigator);
+                navigator.setAppBadge = function(count) {
+                    window.ipc.postMessage(JSON.stringify({type:'badge', count: count || 0}));
+                    return origSetBadge(count);
+                };
+            }
+            if (navigator.clearAppBadge) {
+                var origClearBadge = navigator.clearAppBadge.bind(navigator);
+                navigator.clearAppBadge = function() {
+                    window.ipc.postMessage(JSON.stringify({type:'badge', count: 0}));
+                    return origClearBadge();
+                };
+            }
+
+            // Check periodically and on title changes
+            checkBadge();
+            var titleEl = document.querySelector('title');
+            if (titleEl) {
+                new MutationObserver(checkBadge).observe(titleEl, { childList: true });
+            }
+            setInterval(checkBadge, 5000);
+        })()"#,
+    );
+
+    // Always set up IPC handler for media controls, badges, and optionally notifications
+    let forward_notifications = perms.allow_notifications;
+    let app_title = app_title_for_notifications.clone();
+    builder = builder.with_ipc_handler(move |req| {
+        let msg = req.body();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(msg) {
+            match parsed.get("type").and_then(|t| t.as_str()) {
+                Some("notification") if forward_notifications => {
+                    let title = parsed
+                        .get("title")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("Notification");
                     let body = parsed.get("body").and_then(|b| b.as_str()).unwrap_or("");
                     let _ = notify_rust::Notification::new()
                         .summary(&format!("{} — {}", app_title, title))
@@ -215,9 +307,20 @@ fn main() -> wry::Result<()> {
                         .appname("dev.heppen.webapps")
                         .show();
                 }
+                Some("media") => {
+                    if let Some(state) = parsed.get("state").and_then(|s| s.as_str()) {
+                        tracing::debug!("Media state: {state}");
+                    }
+                }
+                Some("badge") => {
+                    if let Some(count) = parsed.get("count").and_then(|c| c.as_u64()) {
+                        tracing::debug!("Badge count: {count}");
+                    }
+                }
+                _ => {}
             }
-        });
-    }
+        }
+    });
 
     // Inject custom CSS if configured
     if let Some(ref css) = browser.custom_css {

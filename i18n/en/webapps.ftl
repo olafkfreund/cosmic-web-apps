@@ -145,3 +145,7 @@ clear-data=Clear Data
 toast-data-cleared=Website data cleared successfully
 toast-data-clear-error=Failed to clear website data
 profile-data-size=Profile Data Size
+
+# URL scheme handlers
+url-schemes=URL Schemes
+url-schemes-placeholder=mailto, webcal, slack

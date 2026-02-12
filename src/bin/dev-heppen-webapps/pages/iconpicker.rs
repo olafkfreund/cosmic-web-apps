@@ -1,10 +1,10 @@
 use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
 use cosmic::{
+    Element, Task,
     action::Action,
     iced::Length,
     task, theme,
     widget::{self},
-    Element, Task,
 };
 use webapps::fl;
 
@@ -69,7 +69,7 @@ impl IconPicker {
                     } else {
                         pages::Message::None
                     }
-                })
+                });
             }
             Message::IconSearch => {
                 self.icons.clear();
@@ -111,25 +111,23 @@ impl IconPicker {
             .on_submit(|_| Message::IconSearch);
         let button = widget::button::standard(fl!("open")).on_press(Message::OpenIconPickerDialog);
 
-        let mut col = widget::column()
-            .spacing(30)
-            .push(
-                widget::container(
-                    widget::row()
-                        .spacing(8)
-                        .push(icons_input)
-                        .push(button)
-                        .push_maybe(if !webapps::icon_pack_installed() {
-                            Some(
-                                widget::button::standard(fl!("download"))
-                                    .on_press(Message::DownloadIconsPack),
-                            )
-                        } else {
-                            None
-                        }),
-                )
-                .padding(8),
-            );
+        let mut col = widget::column().spacing(30).push(
+            widget::container(
+                widget::row()
+                    .spacing(8)
+                    .push(icons_input)
+                    .push(button)
+                    .push_maybe(if !webapps::icon_pack_installed() {
+                        Some(
+                            widget::button::standard(fl!("download"))
+                                .on_press(Message::DownloadIconsPack),
+                        )
+                    } else {
+                        None
+                    }),
+            )
+            .padding(8),
+        );
 
         if !icons.is_empty() {
             col = col.push(
@@ -138,12 +136,10 @@ impl IconPicker {
             );
         } else if self.has_searched {
             col = col.push(
-                widget::container(
-                    widget::text::body(fl!("no-icons-found"))
-                )
-                .padding(20)
-                .width(Length::Fill)
-                .align_x(cosmic::iced::Alignment::Center),
+                widget::container(widget::text::body(fl!("no-icons-found")))
+                    .padding(20)
+                    .width(Length::Fill)
+                    .align_x(cosmic::iced::Alignment::Center),
             );
         }
 

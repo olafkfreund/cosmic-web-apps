@@ -1,4 +1,4 @@
-use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
+use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use webapps::{APP_ID, CONFIG_VERSION};
 
 #[derive(Debug, Default, Clone, CosmicConfigEntry, Eq, PartialEq)]
