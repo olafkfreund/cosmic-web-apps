@@ -1,10 +1,19 @@
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
+use serde::{Deserialize, Serialize};
 use webapps::{APP_ID, CONFIG_VERSION};
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ViewMode {
+    #[default]
+    List,
+    Grid,
+}
+
 #[derive(Debug, Default, Clone, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 1]
+#[version = 2]
 pub struct AppConfig {
     pub app_theme: String,
+    pub view_mode: ViewMode,
 }
 
 impl AppConfig {

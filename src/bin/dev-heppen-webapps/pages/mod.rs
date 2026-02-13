@@ -41,6 +41,9 @@ use webapps::{APP_ICON, APP_ID, REPOSITORY, fl};
 static MENU_ID: LazyLock<cosmic::widget::Id> =
     LazyLock::new(|| cosmic::widget::Id::new("responsive-menu"));
 
+static SEARCH_ID: LazyLock<cosmic::widget::Id> =
+    LazyLock::new(|| cosmic::widget::Id::new("search-input"));
+
 #[derive(Debug, Clone)]
 pub enum Message {
     ChangeUserTheme(usize),
@@ -82,6 +85,13 @@ pub enum Message {
     UpdateTheme(Box<Theme>),
     ClearAppData(String),
     ClearAppDataDone(Result<(), String>),
+    FocusSearch,
+    LaunchCurrentApp,
+    DuplicateCurrentApp,
+    OpenCurrentAppUrl,
+    ToggleViewMode,
+    SelectAppFromGrid(String),
+    UpdateRunningApps(std::collections::HashSet<String>),
     // empty message
     None,
 }
@@ -114,6 +124,7 @@ pub struct QuickWebApps {
     themes_list: Vec<Theme>,
     theme_idx: Option<usize>,
     toasts: widget::toaster::Toasts<Message>,
+    running_app_ids: std::collections::HashSet<String>,
 }
 
 impl Application for QuickWebApps {
@@ -153,6 +164,41 @@ impl Application for QuickWebApps {
             },
             MenuAction::Save,
         );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("f".into()),
+            },
+            MenuAction::FocusSearch,
+        );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("e".into()),
+            },
+            MenuAction::ExportApps,
+        );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("i".into()),
+            },
+            MenuAction::ImportApps,
+        );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("l".into()),
+            },
+            MenuAction::LaunchApp,
+        );
+        key_binds.insert(
+            menu::KeyBind {
+                modifiers: vec![menu::key_bind::Modifier::Ctrl],
+                key: cosmic::iced_core::keyboard::Key::Character("d".into()),
+            },
+            MenuAction::DuplicateApp,
+        );
 
         let windows = QuickWebApps {
             core,
@@ -170,6 +216,7 @@ impl Application for QuickWebApps {
             themes_list,
             theme_idx: Some(0),
             toasts: widget::toaster::Toasts::new(Message::CloseToast),
+            running_app_ids: std::collections::HashSet::new(),
         };
 
         let tasks = vec![
@@ -189,6 +236,20 @@ impl Application for QuickWebApps {
                 .watch_config::<AppConfig>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
         );
+
+        // Poll for running webview processes every 5 seconds
+        subscriptions.push(Subscription::run_with_id(
+            "running-apps-poll",
+            cosmic::iced::stream::channel(1, |mut channel| async move {
+                loop {
+                    let ids = tokio::task::spawn_blocking(webapps::running_webview_app_ids)
+                        .await
+                        .unwrap_or_default();
+                    let _ = channel.send(Message::UpdateRunningApps(ids)).await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }),
+        ));
 
         if self.downloader_started {
             subscriptions.push(Subscription::run_with_id(
@@ -815,6 +876,80 @@ impl Application for QuickWebApps {
                     );
                 }
             },
+            Message::FocusSearch => {
+                return widget::text_input::focus(SEARCH_ID.clone());
+            }
+            Message::LaunchCurrentApp => {
+                let Page::Editor(editor) = &self.page;
+                if let Some(browser) = &editor.app_browser {
+                    let arg_id = browser.app_id.clone();
+                    return task::future(async { crate::pages::Message::Launch(arg_id) });
+                }
+            }
+            Message::DuplicateCurrentApp => {
+                return task::message(cosmic::action::app(Message::Editor(
+                    editor::Message::Duplicate,
+                )));
+            }
+            Message::ToggleViewMode => {
+                use crate::config::ViewMode;
+                self.config.view_mode = match self.config.view_mode {
+                    ViewMode::List => ViewMode::Grid,
+                    ViewMode::Grid => ViewMode::List,
+                };
+                if let Some(handler) = AppConfig::config_handler() {
+                    let _ = self.config.set_view_mode(&handler, self.config.view_mode);
+                }
+            }
+            Message::SelectAppFromGrid(app_id) => {
+                // Find the target entity first (immutable borrow)
+                let target = self.nav.iter().find(|&entity| {
+                    self.nav.data::<Page>(entity).is_some_and(|page| {
+                        let Page::Editor(editor) = page;
+                        editor
+                            .app_browser
+                            .as_ref()
+                            .is_some_and(|b| b.app_id.as_ref() == app_id)
+                    })
+                });
+                // Then activate it (mutable borrow)
+                if let Some(entity) = target {
+                    if let Some(page) = self.nav.data::<Page>(entity) {
+                        self.page = page.clone();
+                    }
+                    self.nav.activate(entity);
+                    // Switch to list view for editing
+                    use crate::config::ViewMode;
+                    self.config.view_mode = ViewMode::List;
+                    if let Some(handler) = AppConfig::config_handler() {
+                        let _ = self.config.set_view_mode(&handler, ViewMode::List);
+                    }
+                }
+            }
+            Message::UpdateRunningApps(ids) => {
+                if ids != self.running_app_ids {
+                    self.running_app_ids = ids;
+                    // Rebuild nav to update running indicators
+                    let active_app_id = match &self.page {
+                        Page::Editor(editor) => editor
+                            .app_browser
+                            .as_ref()
+                            .map(|b| b.app_id.as_ref().to_string()),
+                    };
+                    self.rebuild_nav_from_cache(active_app_id.as_deref());
+                }
+            }
+            Message::OpenCurrentAppUrl => {
+                let Page::Editor(editor) = &self.page;
+                if !editor.app_url.is_empty() {
+                    match open::that_detached(&editor.app_url) {
+                        Ok(()) => {}
+                        Err(err) => {
+                            tracing::error!("Failed to open URL {:?}: {err}", editor.app_url);
+                        }
+                    }
+                }
+            }
             Message::None => (),
         };
 
@@ -848,7 +983,18 @@ impl Application for QuickWebApps {
             widget::text_input(fl!("search"), &self.search_query)
                 .on_input(Message::SearchApps)
                 .width(Length::Fixed(200.0))
+                .id(SEARCH_ID.clone())
                 .into(),
+            widget::tooltip(
+                widget::button::icon(match self.config.view_mode {
+                    crate::config::ViewMode::List => widget::icon::from_name("view-grid-symbolic"),
+                    crate::config::ViewMode::Grid => widget::icon::from_name("view-list-symbolic"),
+                })
+                .on_press(Message::ToggleViewMode),
+                widget::text(fl!("toggle-view")),
+                widget::tooltip::Position::Bottom,
+            )
+            .into(),
         ]
     }
 
@@ -883,7 +1029,17 @@ impl Application for QuickWebApps {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Task<Message> {
         self.nav.activate(id);
         if let Some(page) = self.nav.data::<Page>(id) {
-            self.page = page.clone()
+            self.page = page.clone();
+
+            // Auto-trigger thumbnail fetch for installed apps with URLs
+            let Page::Editor(editor) = &self.page;
+            if editor.is_installed
+                && editor.thumbnail_handle.is_none()
+                && !editor.thumbnail_loading
+                && webapps::url_valid(&editor.app_url)
+            {
+                return task::message(Message::Editor(editor::Message::FetchThumbnail));
+            }
         }
         Task::none()
     }
@@ -920,30 +1076,124 @@ impl Application for QuickWebApps {
         // nav has 1 entry (the "Create new" placeholder) when no apps are installed
         let has_installed_apps = self.nav.iter().count() > 1;
 
-        let mut col = widget::column().spacing(12);
+        let main_content = match self.config.view_mode {
+            crate::config::ViewMode::Grid if has_installed_apps => {
+                // Grid/card view of all apps
+                let query = self.search_query.to_lowercase();
+                let card_elements: Vec<Element<'_, Message>> = self
+                    .cached_apps
+                    .iter()
+                    .filter(|app| {
+                        query.is_empty() || app.name.to_lowercase().contains(&query)
+                    })
+                    .map(|app| {
+                        let is_running = self
+                            .running_app_ids
+                            .contains(app.browser.app_id.as_ref());
 
-        if !has_installed_apps && !content.is_installed {
-            col = col.push(
+                        let display_name = if is_running {
+                            format!("{} {}", fl!("running-indicator"), app.name)
+                        } else {
+                            app.name.clone()
+                        };
+
+                        let app_id = app.browser.app_id.as_ref().to_string();
+                        widget::button::custom(
+                            widget::column()
+                                .spacing(8)
+                                .push(
+                                    widget::icon::from_name(app.icon.clone())
+                                        .size(64),
+                                )
+                                .push(
+                                    widget::text::body(display_name)
+                                        .width(Length::Fixed(100.0))
+                                        .align_x(Horizontal::Center),
+                                )
+                                .align_x(Alignment::Center),
+                        )
+                        .width(Length::Fixed(120.0))
+                        .height(Length::Fixed(120.0))
+                        .on_press(Message::SelectAppFromGrid(app_id))
+                        .class(cosmic::style::Button::Image)
+                        .into()
+                    })
+                    .collect();
+
+                let cards = widget::row::with_children(card_elements)
+                    .spacing(12)
+                    .wrap();
+
                 widget::container(
-                    widget::column()
-                        .spacing(8)
-                        .push(widget::text::title3(fl!("create-new-webapp")))
-                        .push(widget::text::body(fl!("not-installed-header")))
-                        .align_x(Alignment::Center),
+                    widget::container(cards)
+                        .padding(24)
+                        .width(Length::Fill),
                 )
                 .width(Length::Fill)
+                .height(Length::Fill)
                 .align_x(Horizontal::Center)
-                .padding([24, 0, 0, 0]),
-            );
-        }
+                .center_x(Length::Fill)
+            }
+            _ => {
+                // List/editor view (default)
+                let mut col = widget::column().spacing(12);
 
-        col = col.push(content.view().map(Message::Editor));
+                if !has_installed_apps && !content.is_installed {
+                    col = col.push(
+                        widget::container(
+                            widget::column()
+                                .spacing(8)
+                                .push(widget::text::title3(fl!("create-new-webapp")))
+                                .push(widget::text::body(fl!("not-installed-header")))
+                                .align_x(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .align_x(Horizontal::Center)
+                        .padding([24, 0, 0, 0]),
+                    );
+                }
 
-        let main_content = widget::container(col)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .center_x(Length::Fill);
+                // Quick-actions toolbar for installed apps
+                if content.is_installed {
+                    col = col.push(
+                        widget::container(
+                            widget::row()
+                                .spacing(8)
+                                .push(
+                                    widget::button::standard(fl!("run-app"))
+                                        .on_press(Message::LaunchCurrentApp),
+                                )
+                                .push(
+                                    widget::button::standard(fl!("duplicate"))
+                                        .on_press(Message::DuplicateCurrentApp),
+                                )
+                                .push(
+                                    widget::button::standard(fl!("open-in-browser"))
+                                        .on_press(Message::OpenCurrentAppUrl),
+                                )
+                                .push(widget::horizontal_space())
+                                .push(
+                                    widget::button::destructive(fl!("delete"))
+                                        .on_press_maybe(
+                                            self.nav.active_data::<Page>().and_then(|_| {
+                                                Some(Message::ConfirmDeletion(self.nav.active()))
+                                            }),
+                                        ),
+                                ),
+                        )
+                        .padding([0, 30]),
+                    );
+                }
+
+                col = col.push(content.view().map(Message::Editor));
+
+                widget::container(col)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(Horizontal::Center)
+                    .center_x(Length::Fill)
+            }
+        };
 
         widget::toaster::toaster(&self.toasts, main_content).into()
     }
@@ -1008,10 +1258,18 @@ impl QuickWebApps {
             if !query.is_empty() && !app.name.to_lowercase().contains(&query) {
                 continue;
             }
+            let is_running = self
+                .running_app_ids
+                .contains(app.browser.app_id.as_ref());
+            let display_name = if is_running {
+                format!("{} {}", fl!("running-indicator"), app.name)
+            } else {
+                app.name.clone()
+            };
             self.nav
                 .insert()
                 .icon(widget::icon::from_name(app.icon.clone()))
-                .text(app.name.clone())
+                .text(display_name)
                 .data::<Page>(Page::Editor(editor::AppEditor::from(app.clone())))
                 .closable();
 
@@ -1113,8 +1371,11 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    DuplicateApp,
     ExportApps,
+    FocusSearch,
     ImportApps,
+    LaunchApp,
     NewApp,
     Save,
     Settings,
@@ -1126,8 +1387,11 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::DuplicateApp => Message::Editor(editor::Message::Duplicate),
             MenuAction::ExportApps => Message::ExportApps,
+            MenuAction::FocusSearch => Message::FocusSearch,
             MenuAction::ImportApps => Message::ImportApps,
+            MenuAction::LaunchApp => Message::Editor(editor::Message::LaunchApp),
             MenuAction::NewApp => Message::ReloadNavbarItems,
             MenuAction::Save => Message::Editor(editor::Message::Done),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),

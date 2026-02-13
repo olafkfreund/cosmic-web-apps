@@ -2,6 +2,7 @@ use clap::Parser;
 use cosmic::{iced_core, iced_winit::graphics::image::image_rs::ImageReader, widget};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fmt::Display,
     fs::{self, create_dir_all},
     io::{Cursor, Read},
@@ -23,7 +24,7 @@ pub const DEFAULT_WINDOW_WIDTH: WindowWidth = 800.0;
 pub const DEFAULT_WINDOW_HEIGHT: WindowHeight = 600.0;
 pub const ICON_SIZE: u32 = 42;
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-pub const CONFIG_VERSION: u64 = 1;
+pub const CONFIG_VERSION: u64 = 2;
 pub const APP_ID: &str = "dev.heppen.webapps";
 pub const APP_ICON: &[u8] =
     include_bytes!("../resources/icons/hicolor/256x256/apps/dev.heppen.webapps.png");
@@ -269,6 +270,83 @@ pub async fn download_favicon(url_str: &str) -> Option<String> {
         .ok()?;
 
     Some(favicon_path.to_string_lossy().to_string())
+}
+
+/// Get the path for a cached thumbnail file.
+/// Returns a path in `$XDG_CACHE_HOME/dev.heppen.webapps/thumbnails/`.
+pub fn thumbnails_path(filename: &str) -> Option<PathBuf> {
+    let cache_dir = dirs::cache_dir()?;
+    let path = cache_dir.join(APP_ID).join("thumbnails");
+
+    if !path.exists() {
+        if let Err(e) = create_dir_all(&path) {
+            tracing::error!("Failed to create thumbnails directory: {e}");
+            return None;
+        }
+    }
+
+    Some(path.join(filename))
+}
+
+/// Download a website thumbnail via thum.io and cache it.
+/// Returns the file path on success. Cached thumbnails are reused if less than 24 hours old.
+pub async fn download_thumbnail(url_str: &str) -> Option<String> {
+    if !url_valid(url_str) {
+        return None;
+    }
+
+    let parsed = url::Url::parse(url_str).ok()?;
+    let domain = parsed.host_str()?;
+    let safe_domain = sanitize_domain_for_filename(domain);
+    let filename = format!("thumb-{safe_domain}.png");
+
+    let thumb_path = thumbnails_path(&filename)?;
+
+    // Use cached version if less than 24 hours old
+    if thumb_path.exists() {
+        if let Ok(meta) = std::fs::metadata(&thumb_path) {
+            if let Ok(modified) = meta.modified() {
+                if modified.elapsed().unwrap_or_default() < std::time::Duration::from_secs(86400) {
+                    return Some(thumb_path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    let thumb_url = format!("https://image.thum.io/get/width/600/{url_str}");
+
+    let response = tokio::process::Command::new("wget")
+        .arg("-q")
+        .arg("-O")
+        .arg("-")
+        .arg("--timeout=15")
+        .arg(&thumb_url)
+        .output()
+        .await
+        .ok()?;
+
+    if !response.status.success() || response.stdout.is_empty() {
+        return None;
+    }
+
+    // Max 5 MB for a thumbnail
+    const MAX_THUMB_SIZE: usize = 5 * 1024 * 1024;
+    if response.stdout.len() > MAX_THUMB_SIZE {
+        tracing::warn!(
+            "Thumbnail response too large: {} bytes",
+            response.stdout.len()
+        );
+        return None;
+    }
+
+    if !is_valid_image_bytes(&response.stdout) {
+        tracing::warn!("Thumbnail response is not a valid image format");
+        return None;
+    }
+
+    tokio::fs::write(&thumb_path, &response.stdout).await.ok()?;
+
+    Some(thumb_path.to_string_lossy().to_string())
 }
 
 pub fn icons_location() -> Option<PathBuf> {
@@ -650,6 +728,39 @@ pub fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
+}
+
+/// Scan `/proc/*/cmdline` to find running webview processes and extract their app_id arguments.
+/// Returns a set of app_id strings for currently running webview instances.
+pub fn running_webview_app_ids() -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return ids;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path().join("cmdline");
+        if let Ok(data) = fs::read(&path) {
+            // cmdline is NUL-separated
+            let args: Vec<&[u8]> = data.split(|&b| b == 0).collect();
+            if let Some(exe) = args.first() {
+                let exe_str = String::from_utf8_lossy(exe);
+                if exe_str.ends_with("dev-heppen-webapps-webview")
+                    || exe_str.ends_with("dev.heppen.webapps.webview")
+                {
+                    // The app_id is the first argument after the binary name
+                    if let Some(app_id_bytes) = args.get(1) {
+                        let app_id = String::from_utf8_lossy(app_id_bytes);
+                        if !app_id.is_empty() && !app_id.starts_with('-') {
+                            ids.insert(app_id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ids
 }
 
 /// Clear all website data (cookies, cache, storage) for a web app by removing its profile directory.

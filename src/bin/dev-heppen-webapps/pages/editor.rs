@@ -47,6 +47,9 @@ pub struct AppEditor {
     pub app_allow_geolocation: bool,
     pub app_allow_notifications: bool,
     pub app_url_schemes: String,
+    pub show_advanced: bool,
+    pub thumbnail_handle: Option<widget::image::Handle>,
+    pub thumbnail_loading: bool,
 }
 
 impl Default for AppEditor {
@@ -86,6 +89,9 @@ impl Default for AppEditor {
             app_allow_geolocation: false,
             app_allow_notifications: false,
             app_url_schemes: String::new(),
+            show_advanced: false,
+            thumbnail_handle: None,
+            thumbnail_loading: false,
         }
     }
 }
@@ -118,6 +124,10 @@ pub enum Message {
     ClearAppData,
     UrlSchemes(String),
     SiteTitleResult(Option<String>),
+    ToggleAdvanced(bool),
+    FetchThumbnail,
+    ThumbnailResult(Option<String>),
+    ThumbnailLoaded(Option<widget::image::Handle>),
 }
 
 impl AppEditor {
@@ -405,6 +415,46 @@ impl AppEditor {
             Message::UrlSchemes(schemes) => {
                 self.app_url_schemes = schemes;
             }
+            Message::ToggleAdvanced(flag) => {
+                self.show_advanced = flag;
+            }
+            Message::FetchThumbnail => {
+                if !self.thumbnail_loading && webapps::url_valid(&self.app_url) {
+                    self.thumbnail_loading = true;
+                    let url = self.app_url.clone();
+                    return Task::perform(
+                        async move { webapps::download_thumbnail(&url).await },
+                        |result| {
+                            cosmic::Action::App(crate::pages::Message::Editor(
+                                Message::ThumbnailResult(result),
+                            ))
+                        },
+                    );
+                }
+            }
+            Message::ThumbnailResult(result) => {
+                self.thumbnail_loading = false;
+                if let Some(path) = result {
+                    return Task::perform(
+                        async move {
+                            let data = tokio::task::spawn_blocking(move || {
+                                std::fs::read(&path).ok()
+                            })
+                            .await
+                            .ok()?;
+                            data.map(widget::image::Handle::from_bytes)
+                        },
+                        |handle| {
+                            cosmic::Action::App(crate::pages::Message::Editor(
+                                Message::ThumbnailLoaded(handle),
+                            ))
+                        },
+                    );
+                }
+            }
+            Message::ThumbnailLoaded(handle) => {
+                self.thumbnail_handle = handle;
+            }
             Message::SiteTitleResult(result) => {
                 // Only auto-fill if the title is still empty (user hasn't typed anything)
                 if let Some(title) = result {
@@ -496,6 +546,38 @@ impl AppEditor {
                     .width(Length::Fill)
                     .class(style::Container::Card),
                 )
+                // Thumbnail preview
+                .push_maybe(if let Some(handle) = &self.thumbnail_handle {
+                    Some(
+                        widget::container(
+                            widget::image(handle.clone())
+                                .width(Length::Fill)
+                                .height(Length::Fixed(200.0)),
+                        )
+                        .width(Length::Fill)
+                        .class(cosmic::style::Container::Card),
+                    )
+                } else if self.thumbnail_loading {
+                    Some(
+                        widget::container(
+                            widget::text::body(fl!("loading")),
+                        )
+                        .width(Length::Fill)
+                        .padding(12)
+                        .class(cosmic::style::Container::Card),
+                    )
+                } else if self.is_installed && webapps::url_valid(&self.app_url) {
+                    Some(
+                        widget::container(
+                            widget::button::standard(fl!("fetch-thumbnail"))
+                                .on_press(Message::FetchThumbnail),
+                        )
+                        .width(Length::Fill)
+                        .padding(12),
+                    )
+                } else {
+                    None
+                })
                 .push(widget::text_input(fl!("title"), &self.app_title).on_input(Message::Title))
                 .push_maybe(if !self.app_title.is_empty() && self.app_title.len() < 3 {
                     Some(widget::text::caption(fl!("warning-app-name")).class(style::Text::Accent))
@@ -526,8 +608,10 @@ impl AppEditor {
                         None
                     },
                 )
-                .push({
-                    let mut settings = widget::settings::section()
+                // Basic settings section
+                .push(
+                    widget::settings::section()
+                        .title(fl!("basic-settings"))
                         .add(widget::settings::item(
                             fl!("select-category"),
                             widget::dropdown(
@@ -564,7 +648,20 @@ impl AppEditor {
                             fl!("decorations"),
                             widget::toggler(self.app_window_decorations)
                                 .on_toggle(Message::WindowDecorations),
-                        ))
+                        )),
+                )
+                // Advanced settings toggle
+                .push(
+                    widget::settings::item(
+                        fl!("advanced-settings"),
+                        widget::toggler(self.show_advanced)
+                            .on_toggle(Message::ToggleAdvanced),
+                    ),
+                )
+                // Advanced settings section (conditional)
+                .push_maybe(if self.show_advanced {
+                    let mut advanced = widget::settings::section()
+                        .title(fl!("advanced-settings"))
                         .add(widget::settings::item(
                             fl!("private-mode"),
                             widget::toggler(self.app_private_mode).on_toggle(Message::AppIncognito),
@@ -584,7 +681,7 @@ impl AppEditor {
                         ));
 
                     if self.app_user_agent == 2 {
-                        settings = settings.add(widget::settings::item(
+                        advanced = advanced.add(widget::settings::item(
                             fl!("user-agent-custom-label"),
                             widget::text_input(
                                 fl!("user-agent-custom-placeholder"),
@@ -594,7 +691,7 @@ impl AppEditor {
                         ));
                     }
 
-                    settings = settings
+                    advanced = advanced
                         .add(widget::settings::item(
                             fl!("permission-camera"),
                             widget::toggler(self.app_allow_camera).on_toggle(Message::AllowCamera),
@@ -644,7 +741,9 @@ impl AppEditor {
                             .on_input(Message::UrlSchemes),
                         ));
 
-                    settings
+                    Some(advanced)
+                } else {
+                    None
                 })
                 .push(
                     widget::row()

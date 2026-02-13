@@ -149,3 +149,19 @@ profile-data-size=Profile Data Size
 # URL scheme handlers
 url-schemes=URL Schemes
 url-schemes-placeholder=mailto, webcal, slack
+
+# editor sections (#49)
+advanced-settings=Advanced Settings
+basic-settings=Basic Settings
+
+# quick actions (#52)
+open-in-browser=Open in Browser
+
+# running indicators (#50)
+running-indicator=●
+
+# grid view (#47)
+toggle-view=Toggle View
+
+# thumbnails (#48)
+fetch-thumbnail=Load Preview
